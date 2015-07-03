@@ -1,11 +1,50 @@
 (ns set-solver.core
   (:require [clojure.java.io :as io]
             [quil.core :as q]
-            [quil.middleware :as m])
+            [quil.middleware :as m]
+            [clojure.math.numeric-tower :refer [abs round]])
   (:import  [java.nio ByteBuffer ByteOrder]
-            [org.opencv.core CvType Mat MatOfByte MatOfInt4 MatOfFloat MatOfPoint MatOfPoint2f Size TermCriteria Point Scalar]
+            [org.opencv.core Core CvType Mat MatOfByte MatOfInt4 MatOfFloat MatOfPoint MatOfPoint2f Size TermCriteria Point Scalar]
             [org.opencv.imgproc Imgproc]
             [org.opencv.imgcodecs Imgcodecs]))
+
+(defn hue-to-rgb
+  "Convert hue color to rgb components
+  Based on algorithm described in:
+  http://en.wikipedia.org/wiki/Hue#Computing_hue_from_RGB
+  and:
+  http://www.w3.org/TR/css3-color/#hsl-color"
+  [m1, m2, hue]
+  (let* [h (cond
+           (< hue 0) (inc hue)
+           (> hue 1) (dec hue)
+           :else hue)]
+        (cond
+         (< (* h 6) 1) (+ m1 (* (- m2 m1) h 6))
+         (< (* h 2) 1) m2
+         (< (* h 3) 2) (+ m1 (* (- m2 m1) (- (/ 2.0 3) h) 6))
+         :else m1)))
+
+(defn hsl-to-rgb
+  "Given color with HSL values return vector of r, g, b.
+  Based on algorithms described in:
+  http://en.wikipedia.org/wiki/Luminance-Hue-Saturation#Conversion_from_HSL_to_RGB
+  and:
+  http://en.wikipedia.org/wiki/Hue#Computing_hue_from_RGB
+  and:
+  http://www.w3.org/TR/css3-color/#hsl-color"
+  [hue saturation lightness]
+  (let* [h (/ hue 360.0)
+         s (/ saturation 100.0)
+         l (/ lightness 100.0)
+         m2 (if (<= l 0.5) (* l (+ s 1))
+                (- (+ l s) (* l s)))
+         m1 (- (* l 2) m2)]
+        (into []
+              (map #(round (* 0xff %))
+                   [(hue-to-rgb m1 m2 (+ h (/ 1.0 3)))
+                    (hue-to-rgb m1 m2 h)
+                    (hue-to-rgb m1 m2 (- h (/ 1.0 3)))]))))
 
 (def frame-rate 30)
 (def width 640)
@@ -45,26 +84,42 @@
 
 (defn rect-contains [r1 r2]
   (and (.contains r1 (.tl r2))
-       (.contains r1 (.br r1))))
+       (.contains r1 (.br r2))))
 
 (defn rect-contained-in-any [r rs]
   (some #(rect-contains % r) rs))
 
-;; given vec of [rect data] pairs, return list of {:data data :rect r :children c}
-(defn nest-recs [pairs]
-  (let [pairs (remove #(rect-contained-in-any (first %) (map first pairs))
-                      pairs)]
-    (for [[rect data] pairs
-          :let [children (filter #(rect-contains rect (first %)) pairs)
-                children (remove #(rect-contained-in-any (first %) (map first children)) children)]]
-      {:data data
-       :rect rect
-       :children (nest-recs children)})))
+(defn rects-containing [r rs]
+  (apply hash-set (filter #(rect-contains % r) rs)))
 
-(comment nest-recs
- (map vector
-      (map #(Imgproc/boundingRect %) @c)
-      @c))
+;; given vec of [rect data] pairs, return list of {:data data :rect r :children c}
+(defn nest-rects [pairs]
+  (let [pairs-with-parents
+        (map (fn [[rect data]]
+               {:rect rect
+                :data data
+                :parents (rects-containing rect (map first pairs))})
+             pairs)]
+    (for [p (filter #(empty? (:parents %)) pairs-with-parents)
+          :let [children (filter #(some (:parents %) [(:rect p)]) pairs-with-parents)
+                children (remove #(some (:parents %) (map :rect children)) children)]]
+      (assoc p :children
+             (nest-rects (map #(vector (:rect %) (:data %)) children))))))
+
+(comment
+  ( nest-recs
+    (map vector
+         (map #(Imgproc/boundingRect %) @c)
+         @c))
+
+  )
+
+(defn draw-rects [dst entry color depth]
+  (when (and (pos? depth) entry)
+    (let [rect (:rect entry)]
+      (Imgproc/rectangle dst (.tl rect) (.br rect) color 2))
+    (doseq [e (:children entry)]
+      (draw-rects dst e color (dec depth)))))
 
 
 (defn find-contours [img]
@@ -77,30 +132,24 @@
     (Imgproc/blur img-gray img-gray (Size. 3 3))
     (Imgproc/Canny img-gray canny-output 100 200) ; 0 600
     (Imgproc/findContours canny-output contours hierarchy Imgproc/RETR_TREE Imgproc/CHAIN_APPROX_SIMPLE (Point. 0 0))
-    (doseq [[i h] (map vector
-                       (range (.size contours))
-                       (partition 4 (.toList hierarchy)))]
-      (let [color (Scalar. (rand-int 255) (rand-int 255) (rand-int 255))
-            rect (Imgproc/boundingRect (.get contours i))
-            src (.submat img rect)
-            dst (.submat drawing rect)
-            ch (map vector contours (partition 4 (.toList hierarchy)))
-            children (filter #(= i (last (second %))) ch)
-            ]
-                                        ;(.copyTo src dst)
-        (Imgproc/rectangle drawing (.tl rect) (.br rect) color 2)
-        (comment
-          (doseq [[cc _] children
-                  :let [r (Imgproc/boundingRect cc)]]
-            (println r)
-            (Imgproc/rectangle drawing (.tl r) (.br r) color 1)))
-                                        ;(Imgproc/drawContours drawing contours i color 2 8 hierarchy 0 (Point.))
-        ))
+    (let [pairs (map vector
+                     (map #(Imgproc/boundingRect %) contours)
+                     contours)
+          rects (nest-rects pairs)]
+      (doseq [entry rects
+              :let [rect (:rect entry)
+                    ;cv (mod (* (.x (.tl rect)) 123 (.y (.tl rect))) 360)
+                    ;[r g b] (hsl-to-rgb cv 50 50)
+                    color (Core/mean (.submat img (-> entry :children first :rect)))
+                    ;color (Scalar. r g b)
+                    ]]
+        (draw-rects drawing entry color 2)
+        (doseq [rect (map :rect (:children entry))]
+          (-> (.submat img rect)
+              (.copyTo (.submat drawing rect))))))
+
     (compare-and-set! h @h hierarchy)
     (compare-and-set! c @c contours)
-    (comment (let [wat (Mat. height width CvType/CV_8UC3)]
-               (Imgproc/cvtColor img-gray wat Imgproc/COLOR_GRAY2RGB 3)
-               wat))
     drawing
     ))
 
