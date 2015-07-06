@@ -3,9 +3,10 @@
             [quil.core :as q]
             [quil.middleware :as m]
             [clojure.math.numeric-tower :refer [abs round]]
-            [com.evocomputing.colors :as colors] )
+            [com.evocomputing.colors :as colors]
+            [set-solver.reusable-buffer :refer [reusable]])
   (:import  [java.nio ByteBuffer ByteOrder]
-            [org.opencv.core Core CvType Mat MatOfByte MatOfInt4 MatOfFloat MatOfPoint MatOfPoint2f Size TermCriteria Point Scalar Rect]
+            [org.opencv.core Core CvType Moments Mat MatOfDouble MatOfByte MatOfInt4 MatOfFloat MatOfPoint MatOfPoint2f Size TermCriteria Point Scalar Rect]
             [org.opencv.imgproc Imgproc]
             [org.opencv.imgcodecs Imgcodecs]))
 
@@ -48,17 +49,19 @@
                     (hue-to-rgb m1 m2 (- h (/ 1.0 3)))]))))
 
 (def frame-rate 30)
-(def width 640)
-(def height 480)
+(def width 1024)
+(def height 768)
 (def n-pixels (* width height))
 
 (defn load-image []
   (let [res (Mat.)]
-    (Imgproc/resize (Imgcodecs/imread "resources/set1.jpg") res (Size.) 0.3 0.3 Imgproc/INTER_AREA)
+    ;(Imgproc/resize (Imgcodecs/imread "resources/set1.jpg") res (Size.) 0.3 0.3 Imgproc/INTER_AREA)
+    (Imgcodecs/imread "resources/set2.jpg")
     res))
 
 (def h (atom nil))
 (def c (atom nil))
+(def r (atom nil))
 
 (defn hierarchy-to-map [h]
   (map (fn [[next-sib prev-sib child parent]]
@@ -121,7 +124,7 @@
     (/ (reduce + ns) (count ns))))
 
 (defn similar-rect [r1 r2]
-  (let [max-diff 2.0]
+  (let [max-diff 15.0]
     (and (> max-diff (Math/abs (- (-> r1 .tl .x) (-> r2 .tl .x))))
          (> max-diff (Math/abs (- (-> r1 .tl .y) (-> r2 .tl .y))))
          (> max-diff (Math/abs (- (-> r1 .br .x) (-> r2 .br .x))))
@@ -230,57 +233,98 @@
 (def match-method Imgproc/CV_CONTOURS_MATCH_I1)
 (def match-min 0.15)
 
+(def contour-num -1)
+
+(def contour-thickness 1)
+
+(defn hu-invariants [moments]
+  (let [result (reusable (MatOfDouble.))]
+    (Imgproc/HuMoments moments result)
+    (.toList result)))
+
 (defn find-contours [img]
-  (let [img-gray (Mat.)
-        canny-output (Mat.)
-        hierarchy (MatOfInt4.)
+  (let [img-gray (reusable (Mat.))
+        canny-output (reusable (Mat.))
+        hierarchy (reusable (MatOfInt4.))
         contours (java.util.LinkedList.)
-        drawing (Mat/zeros (.size img) CvType/CV_8UC3)]
+        drawing (reusable (Mat. (.size img) CvType/CV_8UC3))]
+    (.setTo drawing (Scalar. 0 0 0))
+    ;(.copyTo img drawing)
     (Imgproc/cvtColor img img-gray Imgproc/COLOR_BGR2GRAY)
-    (Imgproc/blur img-gray img-gray (Size. 3 3))
+    (Imgproc/blur img-gray img-gray (Size. 2 2))
     (Imgproc/Canny img-gray canny-output 100 200) ; 0 600
+    ;(Imgproc/dilate canny-output canny-output (Mat.))
+    ;(Imgproc/erode canny-output canny-output (Mat.))
+    (comment
+      (let [m (reusable (Mat. (.size img) CvType/CV_8UC3))]
+        (Imgproc/cvtColor canny-output m Imgproc/COLOR_GRAY2BGR)
+        (.copyTo m drawing)))
     (Imgproc/findContours canny-output contours hierarchy Imgproc/RETR_TREE Imgproc/CHAIN_APPROX_SIMPLE (Point. 0 0))
-    (Imgproc/drawContours drawing contours 1 (Scalar. 255 255 255) 2)
-    (let [pairs (map vector
-                     (map #(Imgproc/boundingRect %) contours)
-                     contours)
-          rects (filter-rects (nest-rects pairs))
-          rects (merge-rects similar-rect rects)
-          rects (match-shapes rects match-method match-min)
-          shapes (distinct (map :shape rects))
-          shape-color-map (zipmap shapes shape-colors)
-          ]
-      (doseq [[entry i] (map vector rects (range))
-              :let [rect (:rect entry)
-                    ;cv (mod (* (.x (.tl rect)) 123 (.y (.tl rect))) 360)
-                    ;[r g b] (hsl-to-rgb cv 50 50)
-                    first-child (-> entry :children first)
-                    ;fc-contour-point (-> (:data first-child) .toList first)
-                    fc-contour-mask (Mat/zeros (.size img) CvType/CV_8U)
-                    _ (when first-child (Imgproc/drawContours fc-contour-mask
-                                                              (list (:data first-child))
-                                                              0
-                                                              (Scalar. 255 255 255)
-                                                              1))
-                    ;color (Scalar. (.get img (.y fc-contour-point) (.x fc-contour-point)))
-                    ;color (Core/mean (.submat img (:rect first-child)))
-                    color (Core/mean img fc-contour-mask)
-                    [r g b _] (.val color)
-                    [h s l] (colors/rgb-to-hsl r g b)
-                    [r2 g2 b2] (colors/hsl-to-rgb h 100 50)
-                    color2 (Scalar. r2 g2 b2)
-                    color3 (get shape-color-map (:shape entry))
-                    ;color (Scalar. r g b)
-                    info (str i (color-name h) "," (count (:children entry)) "," (:shape entry))
-                    ]]
-        (Imgproc/putText drawing info (.tl rect) Core/FONT_HERSHEY_COMPLEX 1 color 2)
-        (draw-rects drawing entry color3 2)
-        (doseq [child (:children entry)
-                :let [rect (:rect child)]]
-          (Imgproc/drawContours drawing (list (:data child)) 0 color2 2)
+    (Imgproc/drawContours drawing contours contour-num (Scalar. 255 255 255) contour-thickness
+                          ;8 hierarchy 1 (Point.)
+                          )
+
+    (comment
+      (let [pairs (map vector
+                       (map #(Imgproc/boundingRect %) contours)
+                       contours)
+            rects (filter-rects (nest-rects pairs))
+                                        ;rects (merge-rects similar-rect rects)
+                                        ;rects (match-shapes rects match-method match-min)
+            shapes (distinct (map :shape rects))
+            shape-color-map (zipmap shapes shape-colors)
+            ]
+        (compare-and-set! r @r rects)
+        (doseq [[entry i] (map vector rects (range))
+                :let [rect (:rect entry)
+                                        ;cv (mod (* (.x (.tl rect)) 123 (.y (.tl rect))) 360)
+                                        ;[r g b] (hsl-to-rgb cv 50 50)
+                      first-child (-> entry :children first)
+                                        ;fc-contour-point (-> (:data first-child) .toList first)
+                      fc-contour-mask (Mat/zeros (.size img) CvType/CV_8U)
+                      _ (when first-child (Imgproc/drawContours fc-contour-mask
+                                                                (list (:data first-child))
+                                                                0
+                                                                (Scalar. 255 255 255)
+                                                                1))
+                      fc-inner-mask (Mat/zeros (.size img) CvType/CV_8U)
+                      _ (doseq [child (:children entry)]
+                          (let [poly2f (MatOfPoint2f.)
+                                child2f (MatOfPoint2f.)
+                                poly (MatOfPoint.)]
+                            (.convertTo (:data child) child2f CvType/CV_32FC2)
+                            (Imgproc/approxPolyDP child2f poly2f 0 true)
+                            (.convertTo poly2f poly CvType/CV_32S)
+                            (Imgproc/drawContours fc-inner-mask
+                                                  (list poly)
+                                                  0
+                                                  (Scalar. 255 255 255)
+                                                  -1)))
+                      child-moments (map #(Imgproc/moments (:data %)) (:children entry))
+                      child-hu-invs (map #(hu-invariants %) child-moments)
+                      avg-invs (average (map first child-hu-invs))
+                      avg-ecc (average (map #(/ (second %) (Math/pow (first %) 2)) child-hu-invs))
+                                        ;color (Scalar. (.get img (.y fc-contour-point) (.x fc-contour-point)))
+                                        ;color (Core/mean (.submat img (:rect first-child)))
+                      color (Core/mean img fc-contour-mask)
+                      [r g b _] (.val color)
+                      [h s l] (colors/rgb-to-hsl r g b)
+                      [r2 g2 b2] (colors/hsl-to-rgb h 100 50)
+                      color2 (Scalar. r2 g2 b2)
+                      color3 (get shape-color-map (:shape entry))
+                                        ;color (Scalar. r g b)
+                      info (str i #_(color-name h) "," (count (:children entry)) "," (:shape entry) "," (-> avg-ecc (* 1000) round))
+                      ]]
+                                        ;(Imgproc/putText drawing info (.tl rect) Core/FONT_HERSHEY_COMPLEX 1 color 2)
+                                        ;(draw-rects drawing entry color3 5)
+                                        ;(.copyTo img drawing fc-inner-mask)
           (comment
-            (-> (.submat img rect)
-                (.copyTo (.submat drawing rect)))))))
+            (doseq [child (:children entry)
+                    :let [rect (:rect child)]]
+              (Imgproc/drawContours drawing (list (:data child)) 0 color2 2)
+              (comment
+                (-> (.submat img rect)
+                    (.copyTo (.submat drawing rect)))))))))
 
     (compare-and-set! h @h hierarchy)
     (compare-and-set! c @c contours)
