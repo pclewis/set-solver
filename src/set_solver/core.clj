@@ -44,6 +44,9 @@
 (def c (atom nil))
 (def r (atom nil))
 
+(defn close-enough [n1 n2 max-diff]
+  (< (Math/abs (- n1 n2)) max-diff))
+
 (defn line-len
   ([p1 p2] (line-len (.x p1) (.y p1) (.x p2) (.y p2)))
   ([p1x p1y p2x p2y]
@@ -235,6 +238,13 @@
    (< hue 275) :red
    :else :purple))
 
+(defn scalar-to-hsl [color]
+  (apply colors/rgb-to-hsl (take 3 (.val color))))
+
+(defn scalar-color-name [color]
+  (let [[h _ _] (scalar-to-hsl color)]
+    (color-name h)))
+
 (def shape-colors
   (map (fn [i]
          (let [[r g b] (colors/hsl-to-rgb (* i 90) 50 50)]
@@ -254,6 +264,12 @@
 
 (defn contour-hu-invariants [contour]
   (hu-invariants (Imgproc/moments contour)))
+
+(defn shape-name [contour]
+  (let [[h1] (contour-hu-invariants contour)]
+    (cond (< h1 0.180) :oval
+          (< h1 0.200) :diamond
+          :else :squiggle)))
 
 (defn contour-poly [contour]
   (let [poly2f (MatOfPoint2f.)
@@ -425,8 +441,73 @@
             (Imgproc/circle drawing center 20 color -1))
           (Imgproc/warpPerspective img target trans-mat (.size target))
 
-          (.copyTo target (.submat drawing (Rect. (.tl (Imgproc/boundingRect c))
+         (.copyTo target (.submat drawing (Rect. (.tl (Imgproc/boundingRect c))
                                                   (.size target))))
+
+         (let [target-gray (Mat/zeros (.size target) CvType/CV_8U)
+               target-canny (Mat. (.size target) CvType/CV_8U)]
+            (Imgproc/cvtColor target target-gray Imgproc/COLOR_BGR2GRAY)
+
+            ;(Imgproc/Canny target-gray target-canny 150 200)
+            (Imgproc/blur target-gray target-gray (Size. 2 2))
+            (Imgproc/threshold target-gray target-canny 140 255 Imgproc/THRESH_BINARY_INV)
+            (Imgproc/rectangle target-canny (Point. 0 0)
+                               (.br (Rect. (Point. 0 0) (.size target)))
+                               (Scalar. 0 0 0) 50) (println target-canny)
+            (let [card-contours (java.util.LinkedList.)
+                  card-hierarchy (MatOfInt4.)
+                  cmean (Core/mean target target-canny)
+                  [edge-h edge-s edge-l] (scalar-to-hsl cmean)
+                  cname (scalar-color-name cmean)
+                  _ (Imgproc/findContours target-canny card-contours card-hierarchy Imgproc/RETR_EXTERNAL Imgproc/CHAIN_APPROX_SIMPLE)
+                  sname (shape-name (first card-contours))
+                  mask (Mat/zeros (.size target) CvType/CV_8U)
+                  _ (Imgproc/drawContours mask card-contours -1 (Scalar. 255 255 255) -1)
+                  _ (Imgproc/drawContours mask card-contours -1 (Scalar. 0 0 0) 30)
+                  inside-color (Core/mean target mask)
+                  [inside-h inside-s inside-l] (scalar-to-hsl inside-color)
+                  _ (Imgproc/drawContours mask card-contours -1 (Scalar. 255 255 255) 30)
+                  _ (Imgproc/drawContours mask card-contours -1 (Scalar. 0 0 0) 10)
+                  _ (Imgproc/drawContours mask card-contours -1 (Scalar. 0 0 0) -1)
+                  outside-color (Core/mean target mask)
+                  [outside-h outside-s outside-l] (scalar-to-hsl outside-color)
+                  fill (cond (and (close-enough inside-l edge-l 5)
+                                  (close-enough inside-h edge-h 5))
+                             :filled
+                             (and (close-enough inside-l outside-l 5)
+                                  (close-enough inside-h outside-h 30)
+                                  (close-enough inside-s outside-s 5)) :empty
+                             :else :shaded)
+
+                  ]
+
+              (Imgproc/putText drawing #_(str (round inside-h) "/"
+                                            (round outside-h) "/"
+                                            (round edge-h))
+                                       (str (count card-contours) cname sname fill)
+                               (point-add (Point. 0 700) (.tl (Imgproc/boundingRect c)))
+                               Core/FONT_HERSHEY_COMPLEX 2 (Scalar. 255 255 255) 2)
+
+             (comment
+               (doseq [cc card-contours]
+                 (Imgproc/putText drawing (str (first (contour-hu-invariants cc)))
+                                  (point-add
+                                   (.tl (Imgproc/boundingRect c))
+                                   (.tl (Imgproc/boundingRect cc)))
+                                  Core/FONT_HERSHEY_COMPLEX 3 (Scalar. 255 255 255) 2)))
+
+              )
+            (Imgproc/threshold target-gray target-canny 140 255 Imgproc/THRESH_BINARY_INV)
+            (Imgproc/rectangle target-canny (Point. 0 0)
+                               (.br (Rect. (Point. 0 0) (.size target)))
+                               (Scalar. 0 0 0) 50) (println target-canny)
+
+            (Imgproc/cvtColor target-canny target Imgproc/COLOR_GRAY2BGR)
+            (.copyTo target (.submat drawing (Rect. (point-add (Point. 300 0)
+                                                               (.tl (Imgproc/boundingRect c)))
+                                                  (.size target))))
+
+            )
           ;(.copyTo target drawing)
 
           )
