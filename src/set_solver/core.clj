@@ -4,64 +4,49 @@
             [quil.middleware :as m]
             [clojure.math.numeric-tower :refer [abs round]]
             [com.evocomputing.colors :as colors]
-            [set-solver.reusable-buffer :refer [reusable]])
+            [clojure.math.combinatorics :as combo]
+            [set-solver.reusable-buffer :refer [reusable]]
+            [set-solver.match-shapes :refer [match-shapes-i1 match-shapes-i2 match-shapes-i3]])
   (:import  [java.nio ByteBuffer ByteOrder]
             [org.opencv.core Core CvType Moments Mat MatOfDouble MatOfByte MatOfInt4 MatOfFloat MatOfPoint MatOfPoint2f Size TermCriteria Point Scalar Rect]
             [org.opencv.imgproc Imgproc]
             [org.opencv.imgcodecs Imgcodecs]))
 
-(defn hue-to-rgb
-  "Convert hue color to rgb components
-  Based on algorithm described in:
-  http://en.wikipedia.org/wiki/Hue#Computing_hue_from_RGB
-  and:
-  http://www.w3.org/TR/css3-color/#hsl-color"
-  [m1, m2, hue]
-  (let* [h (cond
-           (< hue 0) (inc hue)
-           (> hue 1) (dec hue)
-           :else hue)]
-        (cond
-         (< (* h 6) 1) (+ m1 (* (- m2 m1) h 6))
-         (< (* h 2) 1) m2
-         (< (* h 3) 2) (+ m1 (* (- m2 m1) (- (/ 2.0 3) h) 6))
-         :else m1)))
+(def frame-rate 15)
 
-(defn hsl-to-rgb
-  "Given color with HSL values return vector of r, g, b.
-  Based on algorithms described in:
-  http://en.wikipedia.org/wiki/Luminance-Hue-Saturation#Conversion_from_HSL_to_RGB
-  and:
-  http://en.wikipedia.org/wiki/Hue#Computing_hue_from_RGB
-  and:
-  http://www.w3.org/TR/css3-color/#hsl-color"
-  [hue saturation lightness]
-  (let* [h (/ hue 360.0)
-         s (/ saturation 100.0)
-         l (/ lightness 100.0)
-         m2 (if (<= l 0.5) (* l (+ s 1))
-                (- (+ l s) (* l s)))
-         m1 (- (* l 2) m2)]
-        (into []
-              (map #(round (* 0xff %))
-                   [(hue-to-rgb m1 m2 (+ h (/ 1.0 3)))
-                    (hue-to-rgb m1 m2 h)
-                    (hue-to-rgb m1 m2 (- h (/ 1.0 3)))]))))
-
-(def frame-rate 30)
 (def width 1024)
 (def height 768)
 (def n-pixels (* width height))
+(def card-shape [0.18457629793074265
+                 0.00638568929006775
+                 1.2985361967142974E-5
+                 1.835864996651821E-7
+                 2.575287665059767E-13
+                 1.3848375876118038E-8
+                 1.1843630759414145E-13])
+
+(defn constrain [n min-n max-n]
+  (max (min n max-n) min-n))
+
 
 (defn load-image []
-  (let [res (Mat.)]
-    ;(Imgproc/resize (Imgcodecs/imread "resources/set1.jpg") res (Size.) 0.3 0.3 Imgproc/INTER_AREA)
-    (Imgcodecs/imread "resources/set2.jpg")
-    res))
+  (Imgcodecs/imread "resources/set1.jpg")
+  )
 
 (def h (atom nil))
 (def c (atom nil))
 (def r (atom nil))
+
+(defn line-len
+  ([p1 p2] (line-len (.x p1) (.y p1) (.x p2) (.y p2)))
+  ([p1x p1y p2x p2y]
+   (Math/sqrt
+    (+ (Math/pow (- p1x p2x) 2)
+       (Math/pow (- p1y p2y) 2)))))
+
+(defn ratio
+  ([size] (ratio (.width size) (.height size)))
+  ([w h] (/ (max w h) (min w h))))
 
 (defn hierarchy-to-map [h]
   (map (fn [[next-sib prev-sib child parent]]
@@ -124,7 +109,7 @@
     (/ (reduce + ns) (count ns))))
 
 (defn similar-rect [r1 r2]
-  (let [max-diff 15.0]
+  (let [max-diff (* 0.10 (line-len (.tl r1) (.br r1)))]
     (and (> max-diff (Math/abs (- (-> r1 .tl .x) (-> r2 .tl .x))))
          (> max-diff (Math/abs (- (-> r1 .tl .y) (-> r2 .tl .y))))
          (> max-diff (Math/abs (- (-> r1 .br .x) (-> r2 .br .x))))
@@ -226,43 +211,253 @@
 
 (def shape-colors
   (map (fn [i]
-         (let [[r g b] (hsl-to-rgb (* i 90) 50 50)]
+         (let [[r g b] (colors/hsl-to-rgb (* i 90) 50 50)]
            (Scalar. r g b)))
        (range 20)))
 
 (def match-method Imgproc/CV_CONTOURS_MATCH_I1)
 (def match-min 0.15)
+(def contour-num 0)
 
-(def contour-num -1)
-
-(def contour-thickness 1)
+(def contour-thickness -1)
 
 (defn hu-invariants [moments]
   (let [result (reusable (MatOfDouble.))]
     (Imgproc/HuMoments moments result)
     (.toList result)))
 
+(defn contour-hu-invariants [contour]
+  (hu-invariants (Imgproc/moments contour)))
+
+(defn contour-poly [contour]
+  (let [poly2f (MatOfPoint2f.)
+        contour2f (MatOfPoint2f.)
+        poly (MatOfPoint.)]
+    (.convertTo contour contour2f CvType/CV_32FC2)
+    (Imgproc/approxPolyDP contour2f poly2f 1 true)
+    (.convertTo poly2f poly CvType/CV_32S)
+    poly))
+
+(defn intersect-lines
+  "Return the point where two lines intersect, or null if they are parallel/coincident"
+  [line1 line2]
+  (let [[x1 y1 x2 y2] (map double line1)
+        [x3 y3 x4 y4] (map double line2)
+        d (- (* (- x1 x2) (- y3 y4))
+             (* (- y1 y2) (- x3 x4)))]
+    (when-not (zero? d)
+      [(/ (- (* (- (* x1 y2) (* y1 x2))
+                (- x3 x4))
+             (* (- x1 x2)
+                (- (* x3 y4) (* y3 x4))))
+          d)
+       (/ (- (* (- (* x1 y2) (* y1 x2))
+                (- y3 y4))
+             (* (- y1 y2)
+                (- (* x3 y4) (* y3 x4))))
+          d)
+       ])))
+
+(defn find-corners
+  [lines]
+  (keep (partial apply intersect-lines)
+        (combo/combinations lines 2)))
+
+
+(defn point-add [p1 p2]
+  (Point. (+ (.x p1) (.x p2))
+          (+ (.y p1) (.y p2))))
+
+(defn point-sub [p1 p2]
+  (Point. (- (.x p1) (.x p2))
+          (- (.y p1) (.y p2))))
+
+(defn is-quadrilateral [contour]
+  (let [c2f (reusable (MatOfPoint2f.))
+        approx2f (reusable (MatOfPoint2f.))]
+    (.convertTo contour c2f CvType/CV_32FC2)
+    (Imgproc/approxPolyDP c2f approx2f
+                          (* 0.02 (Imgproc/arcLength c2f true))
+                          true)
+    (= 4 (.rows approx2f))))
+
+
+
+
+(defn is-rectangle [contour]
+  (let [c2f (reusable (MatOfPoint2f.))
+        approx2f (reusable (MatOfPoint2f.))]
+    (.convertTo contour c2f CvType/CV_32FC2)
+    (Imgproc/approxPolyDP c2f approx2f
+                          (* 0.02 (Imgproc/arcLength c2f true))
+                          true)
+    (when (= 4 (.rows approx2f))
+      (let [[[p2x p2y] [p1x p1y] [p3x p3y]] (map #(vector (.x %) (.y %)) (.toList approx2f))
+            p12 (line-len p1x p1y p2x p2y)
+            p13 (line-len p1x p1y p3x p3y)
+            p23 (line-len p2x p2y p3x p3y)
+            angle (Math/acos
+                   (/ (- (+ (* p12 p12) (* p13 p13))
+                         (* p23 p23))
+                      (* 2 p12 p13)))]
+        (println angle)
+        (< 1.3
+           angle
+           1.7)))))
+
+
 (defn find-contours [img]
   (let [img-gray (reusable (Mat.))
         canny-output (reusable (Mat.))
         hierarchy (reusable (MatOfInt4.))
         contours (java.util.LinkedList.)
-        drawing (reusable (Mat. (.size img) CvType/CV_8UC3))]
+        drawing (reusable (Mat. (.size img) CvType/CV_8UC3))
+        blur-x (constrain (/ (.width img) 500) 3 3)
+        blur-y (constrain (/ (.height img) 500) 3 3)]
     (.setTo drawing (Scalar. 0 0 0))
     ;(.copyTo img drawing)
     (Imgproc/cvtColor img img-gray Imgproc/COLOR_BGR2GRAY)
-    (Imgproc/blur img-gray img-gray (Size. 2 2))
-    (Imgproc/Canny img-gray canny-output 100 200) ; 0 600
-    ;(Imgproc/dilate canny-output canny-output (Mat.))
-    ;(Imgproc/erode canny-output canny-output (Mat.))
+    (Imgproc/blur img-gray img-gray (Size. blur-x blur-y))
+    (Imgproc/Canny img-gray canny-output 50 100 ;3 true
+                   ) ; 0 600
+    ;(Imgproc/blur canny-output canny-output (Size. 5 5))
+    (Imgproc/dilate canny-output canny-output (Mat.))
+    (if (< (min (.width img) (.height img)) 1000)
+      (Imgproc/erode canny-output canny-output (Mat.)))
+    (let [m (reusable (Mat. (.size img) CvType/CV_8UC3))]
+      (Imgproc/cvtColor canny-output m Imgproc/COLOR_GRAY2BGR)
+      (.copyTo m drawing))
+    (Imgproc/findContours canny-output contours hierarchy Imgproc/RETR_TREE Imgproc/CHAIN_APPROX_TC89_KCOS (Point. 0 0))
     (comment
-      (let [m (reusable (Mat. (.size img) CvType/CV_8UC3))]
-        (Imgproc/cvtColor canny-output m Imgproc/COLOR_GRAY2BGR)
-        (.copyTo m drawing)))
-    (Imgproc/findContours canny-output contours hierarchy Imgproc/RETR_TREE Imgproc/CHAIN_APPROX_SIMPLE (Point. 0 0))
-    (Imgproc/drawContours drawing contours contour-num (Scalar. 255 255 255) contour-thickness
-                          ;8 hierarchy 1 (Point.)
-                          )
+      (Imgproc/drawContours drawing contours contour-num (Scalar. 255 255 255) contour-thickness
+                                        ;8 hierarchy 1 (Point.)
+                            ))
+
+    (let [cards (->> contours
+                     (filter #(< 250 (Imgproc/contourArea %)))
+                     (filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
+                     (filter is-rectangle)
+                   ;(filter #(< 1.2 (-> % Imgproc/boundingRect .size ratio) 1.7))
+                   ;(filter #(< 0.17 (first (contour-hu-invariants %)) 0.2))
+                   ;(filter #(< 0.003 (second (contour-hu-invariants %)) 0.01))
+                   ;(filter #(< (nth (contour-hu-invariants %) 2) 0.0001))
+                     (reduce (fn [cs c]
+                               (if (some #(similar-rect (Imgproc/boundingRect %) (Imgproc/boundingRect c)) cs)
+                                 cs
+                                 (conj cs c)))
+                             []))]
+
+      (clojure.pprint/pprint (map #(Imgproc/boundingRect %) cards))
+      (Imgproc/putText drawing
+                         (str (count cards))
+                         (Point. 100 100)
+                         Core/FONT_HERSHEY_COMPLEX
+                         1 (Scalar. 255 255 255) 2)
+
+      (doseq [c cards
+              :let [color (Scalar. (rand-int 255) (rand-int 255) (rand-int 255))]]
+       ;let [c (nth cards contour-num)]
+        (Imgproc/putText drawing
+                         (str (nth (contour-hu-invariants c) 1))
+                         (.tl (Imgproc/boundingRect c))
+                         Core/FONT_HERSHEY_COMPLEX
+                         1 (Scalar. 255 255 255) 2)
+        ;(Imgproc/drawContours drawing (list c) 0 color 5)
+        (let [c2f (MatOfPoint2f.)
+              approx2f (MatOfPoint2f.)
+              approx (MatOfPoint.)]
+          (.convertTo c c2f CvType/CV_32FC2)
+          (Imgproc/approxPolyDP c2f approx2f
+                                (* 0.02 (Imgproc/arcLength c2f true))
+                                true)
+          (.convertTo approx2f approx CvType/CV_32S)
+          (when (and (= 4 (count (.toList approx))))
+            (println
+             (-> approx Imgproc/boundingRect .size ratio))
+            (doseq [pt (.toList approx)]
+              (Imgproc/circle drawing pt 20 color -1))
+            (doseq [[p1 p2] (combo/combinations (.toList approx) 2)]
+              (Imgproc/line drawing p1 p2 color 3))))
+
+        (comment
+          (let[lines (MatOfInt4.)
+               rect (Imgproc/boundingRect c)
+               rtl (.tl rect)
+                                        ;rect
+               #_(Rect. (point-sub (.tl rect) (Point. 10 10))
+                        (point-add (.br rect) (Point. 10 10)))
+               i-rect (Rect. (point-sub (.tl rect) (Point. 250 250))
+                             (point-add (.br rect) (Point. 250 250)))
+               _ (println rect)
+               tmp (Mat/zeros (.size rect) CvType/CV_8U)
+               _ (Imgproc/drawContours tmp (list c) 0 (Scalar. 255 255 255) 1
+                                       8 (Mat.) 1 (point-sub (Point. 10 10) rtl))
+               _ (Imgproc/dilate tmp tmp (Mat.))
+                                        ;_ (Imgproc/drawContours drawing (list c) 0 (Scalar. 255 255 255) 2)
+               _ (Imgproc/HoughLinesP tmp lines 2 (/ Math/PI 180) 70 200 10)
+               lines (partition 4 (.toList lines))
+               corners (find-corners lines)
+               corners (filter #(.contains i-rect (point-add rtl (Point. (first %) (second %)))) corners)
+               corner-mat (MatOfPoint2f.)
+               corner-matp (MatOfPoint.)
+               c2f (MatOfPoint2f.)
+               approx2f (MatOfPoint2f.)
+               approx (MatOfPoint.)]
+            (when (not-empty corners)
+
+              (comment
+                (doseq [line lines]
+                  (Imgproc/line (.submat drawing rect)
+                                (Point. (nth line 0) (nth line 1))
+                                (Point. (nth line 2) (nth line 3))
+                                (Scalar. (rand-int 255) (rand-int 255) (rand-int 255))
+                                1)))
+              (comment
+                (doseq [[l1 l2] (combo/combinations lines 2)
+                        :let [corner (intersect-lines l1 l2)
+                              color (Scalar. (rand-int 255) (rand-int 255) (rand-int 255))]]
+                  (when (and corner
+                             (.contains i-rect (point-add rtl (Point. (first corner) (second corner))))
+                             )
+                    (Imgproc/rectangle drawing (.tl rect) (.br rect) (Scalar. 255 255 255) 1)
+                    (Imgproc/circle drawing (point-add rtl (apply #(Point. %1 %2) corner)) 20 color)
+                    (Imgproc/line drawing
+                                  (point-add rtl (Point. (nth l1 0) (nth l1 1)))
+                                  (point-add rtl (Point. (nth l1 2) (nth l1 3)))
+                                  color
+                                  2)
+                    (Imgproc/line drawing
+                                  (point-add rtl (Point. (nth l2 0) (nth l2 1)))
+                                  (point-add rtl (Point. (nth l2 2) (nth l2 3)))
+                                  color
+                                  2)
+                    (Imgproc/line drawing
+                                  (point-add rtl (Point. (nth l1 0) (nth l1 1)))
+                                  (point-add rtl (Point. (nth corner 0) (nth corner 1)))
+                                  color
+                                  1)
+                    (Imgproc/line drawing
+                                  (point-add rtl (Point. (nth l2 0) (nth l2 1)))
+                                  (point-add rtl (Point. (nth corner 0) (nth corner 1)))
+                                  color
+                                  1))))
+              (comment
+                (doseq [pt corners]
+                  (Imgproc/circle drawing (point-add rtl (apply #(Point. %1 %2) pt)) 20 color)))
+              (.convertTo corner-mat corner-matp CvType/CV_32S)
+                                        ;(Imgproc/drawContours (.submat drawing rect) (list corner-matp) 0 color -1 )
+                                        ;(.fromList corner-mat (flatten (map #(Point. (first %) (second %)) corners)))
+                                        ;(Imgproc/drawContours (.submat drawing rect) (list approx) 0 color 5)
+              )
+            (comment
+              )
+
+            (comment
+              (when (< (count lines) 50)
+                ))))
+
+
+        ))
 
     (comment
       (let [pairs (map vector
@@ -346,8 +541,19 @@
                      contours)]
       (nest-rects pairs))))
 
-(defn mat->p-img [{:keys [canny in-mat tmp-mat out-mat b-array i-array p-img]}]
-  (Imgproc/resize canny tmp-mat (.size tmp-mat) 0 0 Imgproc/INTER_AREA)
+(defn mat->p-img [{:keys [canny in-mat tmp-mat out-mat b-array i-array p-img top left zoom]}]
+  ;
+  (let [rm (Mat.)
+        _ (Imgproc/resize canny rm (Size.) zoom zoom Imgproc/INTER_AREA)
+        rw (min width (.width rm))
+        rh (min height (.height rm))
+        rs (Size. rw rh)
+        rect (Rect. (Point. (constrain left 0 (- (.width rm) width))
+                            (constrain top 0 (- (.height rm) height)))
+                    rs) ]
+    (.copyTo (.submat rm rect)
+             (.submat tmp-mat (Rect. (Point. 0 0) rs)))
+    )
   (Imgproc/cvtColor tmp-mat out-mat Imgproc/COLOR_RGB2RGBA 4)
   (.get out-mat 0 0 b-array)
   (-> (ByteBuffer/wrap b-array)
@@ -370,9 +576,13 @@
                                :out-mat (Mat. height width CvType/CV_8UC4)
                                :b-array (byte-array (* 4 n-pixels))
                                :i-array (int-array n-pixels)
-                               :p-img   (q/create-image width height :rgb)}
+                               :p-img   (q/create-image width height :rgb)
+                               :top 0
+                               :left 0
+                               :zoom 1.0}
                :color 0
-               :angle 0}
+               :angle 0
+               }
         state (assoc-in state [:mat-converter :canny] (find-contours image))]
    (mat->p-img (:mat-converter state))
     state))
@@ -392,6 +602,7 @@
 
   (q/background 0)
   (q/image (:p-img (:mat-converter state)) 1 1)
+  (q/text (str (select-keys (:mat-converter state) [:left :top :zoom])) 15 15)
   (q/fill (:color state) 255 255)
                                         ; Calculate x and y coordinates of the circle.
   (let [angle (:angle state)
@@ -403,6 +614,17 @@
                                         ; Draw the circle.
       (q/ellipse x y 10 10))))
 
+(defn key-pressed [state e]
+  (q/frame-rate frame-rate)
+  (case (:key e)
+    :j (update-in state [:mat-converter :top] #(+ 15 %))
+    :k (update-in state [:mat-converter :top] #(- % 15))
+    :l (update-in state [:mat-converter :left] #(+ 15 %))
+    :h (update-in state [:mat-converter :left] #(- % 15))
+    :+ (update-in state [:mat-converter :zoom] #(* % 2))
+    :- (update-in state [:mat-converter :zoom] #(/ % 2))
+    state))
+
 (q/defsketch set-solver
   :title "You spin my circle right round"
   :size [width height]
@@ -412,7 +634,20 @@
   :update update-state
   :draw draw-state
   :features [:keep-on-top]
+  :key-pressed key-pressed
   ; This sketch uses functional-mode middleware.
   ; Check quil wiki for more info about middlewares and particularly
   ; fun-mode.
   :middleware [m/fun-mode])
+
+(comment
+
+  (clojure.pprint/pprint
+   (filter #(< 0.174 (last %) 0.180)
+    (map #(identity [(-> % Imgproc/boundingRect .tl)
+                     (-> % Imgproc/boundingRect .size ratio)
+                     (first (contour-hu-invariants %))])
+         (filter #(< 1.2 (-> % Imgproc/boundingRect .size ratio) 1.6) @c))))
+
+
+  )

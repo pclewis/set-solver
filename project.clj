@@ -10,7 +10,8 @@
                  [org.clojure/core.cache "0.6.3"]
                 ; [com.evocomputing/colors "1.0.0-SNAPSHOT" :exclusions [org.clojure/clojure-contrib]]
                  [org.clojars.brunchboy/colors "1.0.2-SNAPSHOT"]
-                  ;; required by native-vector
+                 [org.clojure/math.combinatorics "0.1.1"]
+                 ;; required by native-vector
                  [org.clojure/math.numeric-tower "0.0.4"]]
 
   :injections [(clojure.lang.RT/loadLibrary org.opencv.core.Core/NATIVE_LIBRARY_NAME)])
