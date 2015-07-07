@@ -28,9 +28,16 @@
 (defn constrain [n min-n max-n]
   (max (min n max-n) min-n))
 
+(defn transpose [matrix]
+  (apply mapv vector matrix))
+
+(defn sgn [n]
+  (cond (pos? n) 1
+        (neg? n) -1
+        :else 0))
 
 (defn load-image []
-  (Imgcodecs/imread "resources/set1.jpg")
+  (Imgcodecs/imread "resources/overhead.jpg")
   )
 
 (def h (atom nil))
@@ -43,6 +50,25 @@
    (Math/sqrt
     (+ (Math/pow (- p1x p2x) 2)
        (Math/pow (- p1y p2y) 2)))))
+
+(defn center-point
+  [pts]
+  (let [xs (map #(.x %) pts)
+        ys (map #(.y %) pts)
+        [min-x max-x] (apply (juxt min max) xs)
+        [min-y max-y] (apply (juxt min max) ys)]
+    (Point. (+ min-x (/ (- max-x min-x) 2))
+            (+ min-y (/ (- max-y min-y) 2)))))
+
+(defn cross-product-z
+  [a b]
+  (- (* (.x a) (.y b))
+     (* (.x b) (.y a))))
+
+(defn orientation [a b c]
+  (+ (cross-product-z a b)
+     (cross-product-z b c)
+     (cross-product-z c a)))
 
 (defn ratio
   ([size] (ratio (.width size) (.height size)))
@@ -300,7 +326,7 @@
                    (/ (- (+ (* p12 p12) (* p13 p13))
                          (* p23 p23))
                       (* 2 p12 p13)))]
-        (println angle)
+        ;(println angle)
         (< 1.3
            angle
            1.7)))))
@@ -318,7 +344,7 @@
     ;(.copyTo img drawing)
     (Imgproc/cvtColor img img-gray Imgproc/COLOR_BGR2GRAY)
     (Imgproc/blur img-gray img-gray (Size. blur-x blur-y))
-    (Imgproc/Canny img-gray canny-output 50 100 ;3 true
+    (Imgproc/Canny img-gray canny-output 60 100 ;3 true
                    ) ; 0 600
     ;(Imgproc/blur canny-output canny-output (Size. 5 5))
     (Imgproc/dilate canny-output canny-output (Mat.))
@@ -328,6 +354,9 @@
       (Imgproc/cvtColor canny-output m Imgproc/COLOR_GRAY2BGR)
       (.copyTo m drawing))
     (Imgproc/findContours canny-output contours hierarchy Imgproc/RETR_TREE Imgproc/CHAIN_APPROX_TC89_KCOS (Point. 0 0))
+    (Imgproc/drawContours drawing contours -1 (Scalar. 255 255 0 ) 3
+                                        ;8 hierarchy 1 (Point.)
+                            )
     (comment
       (Imgproc/drawContours drawing contours contour-num (Scalar. 255 255 255) contour-thickness
                                         ;8 hierarchy 1 (Point.)
@@ -337,47 +366,88 @@
                      (filter #(< 250 (Imgproc/contourArea %)))
                      (filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
                      (filter is-rectangle)
-                   ;(filter #(< 1.2 (-> % Imgproc/boundingRect .size ratio) 1.7))
-                   ;(filter #(< 0.17 (first (contour-hu-invariants %)) 0.2))
-                   ;(filter #(< 0.003 (second (contour-hu-invariants %)) 0.01))
-                   ;(filter #(< (nth (contour-hu-invariants %) 2) 0.0001))
+                     ; eliminate overlapping contours
                      (reduce (fn [cs c]
                                (if (some #(similar-rect (Imgproc/boundingRect %) (Imgproc/boundingRect c)) cs)
                                  cs
                                  (conj cs c)))
                              []))]
 
-      (clojure.pprint/pprint (map #(Imgproc/boundingRect %) cards))
+      ;(clojure.pprint/pprint (map #(Imgproc/boundingRect %) cards))
+
       (Imgproc/putText drawing
-                         (str (count cards))
-                         (Point. 100 100)
-                         Core/FONT_HERSHEY_COMPLEX
-                         1 (Scalar. 255 255 255) 2)
+                       (str (count cards))
+                       (Point. 100 100)
+                       Core/FONT_HERSHEY_COMPLEX
+                       1 (Scalar. 255 255 255) 2)
 
       (doseq [c cards
               :let [color (Scalar. (rand-int 255) (rand-int 255) (rand-int 255))]]
-       ;let [c (nth cards contour-num)]
+                                        ;let [c (nth cards contour-num)]
         (Imgproc/putText drawing
                          (str (nth (contour-hu-invariants c) 1))
                          (.tl (Imgproc/boundingRect c))
                          Core/FONT_HERSHEY_COMPLEX
                          1 (Scalar. 255 255 255) 2)
-        ;(Imgproc/drawContours drawing (list c) 0 color 5)
-        (let [c2f (MatOfPoint2f.)
+                                        ;(Imgproc/drawContours drawing (list c) 0 color 5)
+
+        ; (Imgproc/drawContours drawing (list c) 0 color -1)
+
+
+
+        (let [target (Mat/zeros 600 300 CvType/CV_8UC3)
+              target-points (MatOfPoint2f.)
+              tright (-> target .cols dec)
+              tbottom (-> target .rows dec)
+              br (Imgproc/boundingRect c)
+              rot (if (> (.width br) (.height br))
+                    #(concat (rest %) (take 1 %))
+                    identity)
+              _ (.fromList target-points (rot (map #(Point. %1 %2) [0 tright tright 0] [0 0 tbottom tbottom])))
+              c2f (MatOfPoint2f.)
               approx2f (MatOfPoint2f.)
-              approx (MatOfPoint.)]
-          (.convertTo c c2f CvType/CV_32FC2)
-          (Imgproc/approxPolyDP c2f approx2f
-                                (* 0.02 (Imgproc/arcLength c2f true))
-                                true)
-          (.convertTo approx2f approx CvType/CV_32S)
-          (when (and (= 4 (count (.toList approx))))
-            (println
-             (-> approx Imgproc/boundingRect .size ratio))
-            (doseq [pt (.toList approx)]
-              (Imgproc/circle drawing pt 20 color -1))
-            (doseq [[p1 p2] (combo/combinations (.toList approx) 2)]
-              (Imgproc/line drawing p1 p2 color 3))))
+              approx (MatOfPoint.)
+              _ (.convertTo c c2f CvType/CV_32FC2)
+              _ (Imgproc/approxPolyDP c2f approx2f
+                                      (* 0.02 (Imgproc/arcLength c2f true))
+                                      true)
+              _ (.convertTo approx2f approx CvType/CV_32S)
+              approx2fl (.toList approx2f)
+              center (center-point approx2fl)
+              pt-order [[-1 -1] [1 -1] [1 1] [-1 1]]
+              a2f-sorted (sort-by #(.indexOf pt-order
+                                             [(sgn (- (.x %) (.x center)))
+                                              (sgn (- (.y %) (.y center)))]) approx2fl)
+              _ (.fromList approx2f a2f-sorted)
+              trans-mat (Imgproc/getPerspectiveTransform approx2f target-points)]
+          (comment
+            (Imgproc/circle drawing (first a2f-sorted) 20 color -1)
+            (Imgproc/circle drawing center 20 color -1))
+          (Imgproc/warpPerspective img target trans-mat (.size target))
+
+          (.copyTo target (.submat drawing (Rect. (.tl (Imgproc/boundingRect c))
+                                                  (.size target))))
+          ;(.copyTo target drawing)
+
+          )
+
+        (comment
+          (let [c2f (MatOfPoint2f.)
+                approx2f (MatOfPoint2f.)
+                approx (MatOfPoint.)]
+            (.convertTo c c2f CvType/CV_32FC2)
+            (Imgproc/approxPolyDP c2f approx2f
+                                  (* 0.02 (Imgproc/arcLength c2f true))
+                                  true)
+            (.convertTo approx2f approx CvType/CV_32S)
+            (when (and (= 4 (count (.toList approx))))
+              (comment
+                (println
+                 (-> approx Imgproc/boundingRect .size ratio)))
+              (doseq [pt (.toList approx)]
+                (Imgproc/circle drawing pt 20 color -1))
+              (doseq [[p1 p2] (combo/combinations (.toList approx) 2)]
+                (Imgproc/line drawing p1 p2 color 3)))))
 
         (comment
           (let[lines (MatOfInt4.)
@@ -602,7 +672,11 @@
 
   (q/background 0)
   (q/image (:p-img (:mat-converter state)) 1 1)
+  (q/fill 0 0 0 192)
+  (q/rect 0 0 300 60)
+  (q/fill 255)
   (q/text (str (select-keys (:mat-converter state) [:left :top :zoom])) 15 15)
+  (q/text (str (round (q/current-frame-rate)) "/" (q/target-frame-rate)) 15 45)
   (q/fill (:color state) 255 255)
                                         ; Calculate x and y coordinates of the circle.
   (let [angle (:angle state)
