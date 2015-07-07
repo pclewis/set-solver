@@ -12,7 +12,7 @@
             [org.opencv.imgproc Imgproc]
             [org.opencv.imgcodecs Imgcodecs]))
 
-(def frame-rate 15)
+(def frame-rate 1)
 
 (def width 1024)
 (def height 768)
@@ -37,7 +37,7 @@
         :else 0))
 
 (defn load-image []
-  (Imgcodecs/imread "resources/overhead.jpg")
+  (Imgcodecs/imread "resources/set1.jpg")
   )
 
 (def h (atom nil))
@@ -347,6 +347,14 @@
            angle
            1.7)))))
 
+(defn find-sets [cards]
+  (filter #(->> %
+                (map (juxt :shape :color :fill :count))
+                transpose
+                (map set)
+                (map count)
+                (every? #{1 3}))
+          (combo/combinations cards 3)))
 
 (defn find-contours [img]
   (let [img-gray (reusable (Mat.))
@@ -387,7 +395,8 @@
                                (if (some #(similar-rect (Imgproc/boundingRect %) (Imgproc/boundingRect c)) cs)
                                  cs
                                  (conj cs c)))
-                             []))]
+                             []))
+          card-props (atom [])]
 
       ;(clojure.pprint/pprint (map #(Imgproc/boundingRect %) cards))
 
@@ -480,6 +489,12 @@
                              :else :shaded)
 
                   ]
+              (swap! card-props conj {:count (count card-contours)
+                                      :shape sname
+                                      :color cname
+                                      :fill fill
+                                      :contour c
+                                      :bb (Imgproc/boundingRect c)})
 
               (Imgproc/putText drawing #_(str (round inside-h) "/"
                                             (round outside-h) "/"
@@ -608,7 +623,21 @@
                 ))))
 
 
-        ))
+        )
+      (let [sets (find-sets @card-props)]
+        (doseq [[s i] (map vector sets (range (count sets) 1 -1))
+                :let [color (Scalar. (rand-int 255) (rand-int 255) (rand-int 255))]]
+          ;(Imgproc/drawContours drawing (map :contour s) -1 color (* 30 i))
+          (doseq [c s]
+            (Imgproc/rectangle drawing
+                               (point-sub (.br (:bb c))
+                                          (Point. 300 (* 100 (inc i))))
+                               (point-sub (.br (:bb c))
+                                          (Point. 0 (* 100 i))) color -1))
+          ))
+      )
+
+
 
     (comment
       (let [pairs (map vector
