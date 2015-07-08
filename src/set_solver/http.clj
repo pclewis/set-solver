@@ -5,6 +5,7 @@
             [ring.middleware.multipart-params.byte-array :refer [byte-array-store]]
             [ring.middleware.keyword-params :refer [wrap-keyword-params]]
             [ring.middleware.params :refer [wrap-params]]
+            [ring.middleware.resource :refer [wrap-resource]]
             [ring.util.response :as r]
             [org.httpkit.server :as hk]
             [clojure.data.json :as json]
@@ -37,12 +38,13 @@
     (r/response (json/write-str resp :value-fn mapify-bb))))
 
 (defroutes app-routes
-  (GET "/" [] "<h1>Hello</h1><form method=POST action=solve enctype=multipart/form-data><input type=file name=file><input type=submit></form>")
+  ;(GET "/" [] "<h1>Hello</h1><form method=POST action=solve enctype=multipart/form-data><input type=file name=file><input type=submit></form>")
   (POST "/echo" {params :params} (echo params))
   (POST "/solve" {params :params} (solve params)))
 
 (def app
   (-> app-routes
+      (wrap-resource "public")
       wrap-keyword-params
       (wrap-multipart-params {:store (byte-array-store)})
       wrap-params))
