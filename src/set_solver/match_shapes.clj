@@ -1,23 +1,20 @@
-(ns set-solver.match-shapes)
-
-(defn- sgn [n]
-  (cond (pos? n) 1
-        (neg? n) -1
-        :else 0))
+(ns set-solver.match-shapes
+  (:require [set-solver.util :refer [sgn]]))
 
 (def ^:private eps 1.e-5)
 
 (defn- match-shapes [ma mb map-fn reduce-fn]
-  (reduce reduce-fn
-          (keep (fn [[ma mb]]
-                  (let [ama (Math/abs ma)
-                        amb (Math/abs mb)
-                        sma (sgn ma)
-                        smb (sgn mb)]
-                    (when (and (> ama eps)
-                               (> amb eps))
-                      (map-fn ama amb sma smb))))
-                (map vector ma mb))))
+  (let [map-res (keep (fn [[ma mb]]
+                        (let [ama (Math/abs ma)
+                              amb (Math/abs mb)
+                              sma (sgn ma)
+                              smb (sgn mb)]
+                          (when (and (> ama eps)
+                                     (> amb eps))
+                            (map-fn ama amb sma smb))))
+                      (map vector ma mb))]
+    (if (empty? map-res) 999
+      (reduce reduce-fn map-res))))
 
 
 ;;       ama = 1. / (sma * log10( ama ));
