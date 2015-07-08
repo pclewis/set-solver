@@ -110,12 +110,12 @@
           _ (Imgproc/drawContours mask card-contours -1 (Scalar. 0 0 0) -1)
           outside-color (Core/mean target mask)
           [outside-h outside-s outside-l] (scalar-to-hsl outside-color)
-          fill (cond (and (close-enough inside-l edge-l 5)
-                          (close-enough inside-h edge-h 5))
+          fill (cond (and (close-enough? inside-l edge-l 5)
+                          (close-enough? inside-h edge-h 5))
                      :filled
-                     (and (close-enough inside-l outside-l 5)
-                          (close-enough inside-h outside-h 30)
-                          (close-enough inside-s outside-s 5)) :empty
+                     (and (close-enough? inside-l outside-l 5)
+                          (close-enough? inside-h outside-h 30)
+                          (close-enough? inside-s outside-s 5)) :empty
                           :else :shaded)
 
           _ (let [m (-> (Core/mean target-gray) .val first (* 0.80))]
@@ -130,7 +130,7 @@
        :shape sname
        :color cname
        :fill fill
-       :contour c
+       :contour contour
        :bb br
        :image target})))
 
@@ -153,7 +153,7 @@
     (->> contours
          (filter #(< 250 (Imgproc/contourArea %)))
          (filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
-         (filter is-rectangle)
+         (filter rectangle?)
          ;; eliminate overlapping contours
          (reduce (fn [cs c]
                    (if (some #(rect-close-enough? (Imgproc/boundingRect %) (Imgproc/boundingRect c)) cs)
@@ -241,7 +241,6 @@
   (q/fill 255)
   (q/text (str (select-keys (:mat-converter state) [:left :top :zoom])) 15 15)
   (q/text (str (round (q/current-frame-rate)) "/" (q/target-frame-rate)) 15 45)
-  (println "what")
   (doseq [c (:card-props state)
           :let [mc (:mat-converter state)]]
 
@@ -257,8 +256,7 @@
                (:left mc))
            (- (* (:zoom mc) (-> c :bb .tl .y))
                (:top mc))
-            ))
-  (q/fill (:color state) 255 255))
+            )))
 
 (q/defsketch hi
   :title "hi"
