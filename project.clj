@@ -12,6 +12,8 @@
                  [org.clojars.brunchboy/colors "1.0.2-SNAPSHOT"]
                  [org.clojure/math.combinatorics "0.1.1"]
                  ;; required by native-vector
-                 [org.clojure/math.numeric-tower "0.0.4"]]
+                 [org.clojure/math.numeric-tower "0.0.4"]
+                 [compojure "1.3.4"]
+                 [http-kit "2.1.18"]]
 
   :injections [(clojure.lang.RT/loadLibrary org.opencv.core.Core/NATIVE_LIBRARY_NAME)])
