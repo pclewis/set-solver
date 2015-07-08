@@ -14,6 +14,9 @@
                  ;; required by native-vector
                  [org.clojure/math.numeric-tower "0.0.4"]
                  [compojure "1.3.4"]
-                 [http-kit "2.1.18"]]
+                 [http-kit "2.1.18"]
+                 ;; required for ring.middleware.multipart-params, normally included with ex jetty
+                 [javax.servlet/servlet-api "2.5"]
+                 [org.clojure/data.json "0.2.6"]]
 
   :injections [(clojure.lang.RT/loadLibrary org.opencv.core.Core/NATIVE_LIBRARY_NAME)])
