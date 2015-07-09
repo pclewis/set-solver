@@ -27,14 +27,17 @@
                  1.3848375876118038E-8
                  1.1843630759414145E-13])
 
-(defn color-name [hue]
-  (cond (< hue 200) :green
-        (< hue 275) :red
-        :else       :purple))
+(defn color-name [hue sat]
+  (cond (< hue 25)  (if (< sat 25) :purple :red)
+        (< hue 60)  :purple
+        (< hue 180) :green
+        (< hue 340) :purple
+        (< sat 25)  :purple
+        :else       :red))
 
 (defn scalar-color-name [color]
-  (let [[h _ _] (scalar-to-hsl color)]
-    (color-name h)))
+  (let [[h s _] (scalar-to-hsl color)]
+    (color-name h s)))
 
 (defn shape-name [contour]
   (let [[h1] (contour-hu-invariants contour)]
@@ -85,7 +88,26 @@
     (Imgproc/cvtColor target target-gray Imgproc/COLOR_BGR2GRAY)
     (Imgproc/blur target-gray target-gray (Size. 2 2))
     (let [m (-> (Core/mean target-gray) .val first (* 0.8))]
-      (Imgproc/threshold target-gray target-edges m 255 Imgproc/THRESH_BINARY_INV)
+      (Imgproc/adaptiveThreshold target-gray target-edges 255
+                                         Imgproc/ADAPTIVE_THRESH_GAUSSIAN_C
+                                         Imgproc/THRESH_BINARY_INV
+                                         9 3)
+      (Imgproc/medianBlur target-edges target-edges 5)
+      (comment
+        (Imgproc/threshold target-gray target-edges m 255 Imgproc/THRESH_BINARY_INV))
+      (comment
+        (let [channels (java.util.LinkedList.)
+              hsl (Mat.)
+              _ (Imgproc/cvtColor target hsl Imgproc/COLOR_BGR2HSV)
+              _ (Core/split hsl channels)
+              #_(Imgproc/cvtColor (nth (vec channels) 2) target Imgproc/COLOR_GRAY2BGR)
+              [h s l] (vec channels)
+              #_(Imgproc/blur l l (Size. 2 2))
+              #_(Core/subtract l s s)
+              _ (Imgproc/Canny l target-edges 50 100 -1 true)]
+          (Imgproc/dilate target-edges target-edges (Mat.))
+          ))
+
       (Imgproc/rectangle target-edges
                          (Point. 0 0)
                          (.br (Rect. (Point. 0 0) (.size target)))
@@ -97,6 +119,7 @@
           [edge-h edge-s edge-l] (scalar-to-hsl cmean)
           cname (scalar-color-name cmean)
           _ (Imgproc/findContours target-edges card-contours card-hierarchy Imgproc/RETR_EXTERNAL Imgproc/CHAIN_APPROX_SIMPLE)
+          card-contours (filter #(< 200 (Imgproc/contourArea %)) card-contours)
           sname (shape-name (first card-contours))
           mask (Mat/zeros (.size target) CvType/CV_8U)
           _ (Imgproc/drawContours mask card-contours -1 (Scalar. 255 255 255) -1)
@@ -116,21 +139,74 @@
                           (close-enough? inside-s outside-s 5)) :empty
                           :else :shaded)
 
-          _ (let [m (-> (Core/mean target-gray) .val first (* 0.80))]
-              (Imgproc/threshold target-gray target-edges m 255 Imgproc/THRESH_BINARY_INV)
-              (Imgproc/rectangle target-edges
-                                 (Point. 0 0)
-                                 (.br (Rect. (Point. 0 0) (.size target)))
-                                 (Scalar. 0 0 0) 50)
-              (Imgproc/cvtColor target-edges target Imgproc/COLOR_GRAY2BGR))
+          #_ (comment
+               channels (java.util.LinkedList.)
+               hsl (Mat.)
+               _ (Imgproc/cvtColor target hsl Imgproc/COLOR_BGR2HSV)
+               _ (Core/split hsl channels)
+               #_(Imgproc/cvtColor (nth (vec channels) 2) target Imgproc/COLOR_GRAY2BGR)
+               [h s l] (vec channels)
+               #_(Imgproc/blur l l (Size. 2 2))
+               #_(Core/subtract l s s)
+               _ (Imgproc/Canny l target-edges 50 100 -1 true)
+               mask (Mat/zeros (.size hsl) CvType/CV_8U)
+               _ (Imgproc/rectangle mask (Point. 30 30) (Point. 270 570) (Scalar. 255 255 255) 5)
+               #_(Core/absdiff h (Scalar. 30 0 0) h )
+               _ (Imgproc/cvtColor target-edges target Imgproc/COLOR_GRAY2BGR)
+               mean-sat (first (.val (Core/mean (second channels) mask)))
+               #_(Imgproc/threshold target target (* 1.2 mean-sat) 255 Imgproc/THRESH_BINARY)
+               #_(Imgproc/dilate target target (Mat.))
+               _ (Imgproc/dilate target target (Mat.)))
+
+          _(let [mask (Mat/zeros (.size target) CvType/CV_8U)
+                 _ (Imgproc/rectangle mask (Point. 30 30) (Point. 270 570) (Scalar. 255 255 255) 5)
+                 mm (Core/mean target mask)
+                 m (-> (Core/mean target-gray) .val first (* 0.9))
+                  te (Mat.)]
+             ;(Imgproc/threshold target-gray target-edges 128 255 (bit-or Imgproc/THRESH_BINARY_INV Imgproc/THRESH_OTSU))
+             (comment
+              (Imgproc/adaptiveThreshold target-gray target-edges 255
+                                          Imgproc/ADAPTIVE_THRESH_GAUSSIAN_C
+                                          Imgproc/THRESH_BINARY_INV
+                                          13 3)
+                                        ;(Imgproc/bilateralFilter te target-edges 40 80 80)
+                                        ;(Imgproc/erode te target-edges (Mat.))
+               (Imgproc/medianBlur target-edges target-edges 11)
+               (Imgproc/dilate target-edges target-edges (Mat.)))
+             (comment
+               (Core/absdiff target mm target))
+             (Imgproc/morphologyEx target target Imgproc/MORPH_GRADIENT
+                                   (Mat/ones 5 5 CvType/CV_8U))
+             (Imgproc/cvtColor target target-gray Imgproc/COLOR_BGR2GRAY)
+             (comment
+               (Imgproc/adaptiveThreshold target-gray target-edges 255
+                                          Imgproc/ADAPTIVE_THRESH_GAUSSIAN_C
+                                          Imgproc/THRESH_BINARY_INV
+                                          29 4))
+             (Imgproc/threshold target-gray target-edges 0 255 (bit-or Imgproc/THRESH_BINARY Imgproc/THRESH_OTSU))
+             ;(Imgproc/dilate target-edges target-edges (Mat.))
+
+             (Imgproc/rectangle target-edges
+                                (Point. 0 0)
+                                (.br (Rect. (Point. 0 0) (.size target)))
+                                (Scalar. 0 0 0) 50)
+             (Imgproc/cvtColor target-edges target Imgproc/COLOR_GRAY2BGR))
+          result {:count (count card-contours)
+                  :shape sname
+                  :color cname
+                  :fill fill
+                  :contour contour
+                  :bb br
+                  :image target}
           ]
-      {:count (count card-contours)
-       :shape sname
-       :color cname
-       :fill fill
-       :contour contour
-       :bb br
-       :image target})))
+      (if 1
+        (into result {:debug {:inside-color [inside-h inside-s inside-l
+                                             (colors/rgb-hexstr (colors/create-color {:h inside-h :s inside-s :l inside-l}))]
+                              :outside-color [outside-h outside-s outside-l
+                                              (colors/rgb-hexstr (colors/create-color {:h outside-h :s outside-s :l outside-l}))]
+                              :contour-color [edge-h edge-s edge-l
+                                              (colors/rgb-hexstr (colors/create-color {:h edge-h :s edge-s :l edge-l}))]}})
+        result))))
 
 
 (defn find-cards

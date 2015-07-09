@@ -32,19 +32,27 @@
         cards (solver/find-cards img)
         cards (map #(solver/identify-card img %) cards)
         cards (map #(assoc %1 :id %2) cards (range))
-        resp {:cards (map #(select-keys % [:id :color :shape :count :fill :bb]) cards)
+        resp {:cards (map #(select-keys % [:id :color :shape :count :fill :bb :debug]) cards)
               :sets (map (fn [s] (map #(select-keys % [:id]) s))
                          (solver/find-sets cards))}]
-    (r/response (json/write-str resp :value-fn mapify-bb))))
+    (-> (r/response (json/write-str resp :value-fn mapify-bb))
+        (r/content-type "application/json"))))
 
 (defroutes app-routes
   ;(GET "/" [] "<h1>Hello</h1><form method=POST action=solve enctype=multipart/form-data><input type=file name=file><input type=submit></form>")
   (POST "/echo" {params :params} (echo params))
   (POST "/solve" {params :params} (solve params)))
 
+(defn wrap-dir-index [handler]
+  (fn [req]
+    (handler
+     (update-in req [:uri]
+                #(if (= "/" %) "/index.html" %)))))
+
 (def app
   (-> app-routes
       (wrap-resource "public")
+      wrap-dir-index
       wrap-keyword-params
       (wrap-multipart-params {:store (byte-array-store)})
       wrap-params))

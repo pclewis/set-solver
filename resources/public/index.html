@@ -1,75 +1,17 @@
+<!doctype html>
 <html>
 <head>
+  <meta charset="UTF-8">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.4/jquery.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/raphael/2.1.4/raphael-min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tinycolor/1.1.2/tinycolor.min.js"></script>
-  <script src="lib/webcam.min.js"></script>
 </head>
 <body>
-  <input id="file" type="file" name="file" />
-  <br>
-  <div id="result" />
-  <img id="preview" />
+  <video id="camera" autoplay></video>
+  <div id="result"> </div>
+  <canvas id="preview"></canvas>
 
-  <script>
-    var paper = null;
-    function r(data) {
-      var result = $('#result'), preview = $('#preview');
-      if (paper) paper.remove();
-      paper = Raphael( result[0], 800, 600);
-      paper.setViewBox(0,0, preview.width() , preview.height(),true);
-      paper.image( preview.attr('src'), 0, 0, preview.width(), preview.height() );
-      var cardmap = {};
-      data.cards.forEach( function(card) {
-        console.log(card);
-        var rect = paper.rect( card.bb.x, card.bb.y, card.bb.width, card.bb.height, 3 );
-        rect.attr('stroke', '#fff');
-        var text = paper.text( card.bb.x, card.bb.y, card.id );
-        text.attr('fill', '#fff').attr('font-size', 100);
-        cardmap[card.id] = card;
-      });
-
-      data.sets.forEach( function(set, i) {
-        var prev = null;
-        var color = tinycolor( {h: 0, s: 0.5, l: 0.5} );
-        color.spin( i * 50 );
-        set.forEach( function(c) {
-          var card = cardmap[c.id];
-          var circle = paper.circle( card.bb.x + (i * 20), card.bb.y + (i * 20), 10 );
-          circle.attr('fill', color.toHexString());
-          if (prev) {
-            var path = paper.path( "M" + (prev.bb.x + (i * 20)) + "," + (prev.bb.y + (i * 20)) +
-                                   "L" + (card.bb.x + (i * 20)) + "," + (card.bb.y + (i * 20)));
-            path.attr('stroke', color.toHexString()).attr('stroke-width', '5');
-          }
-          prev = card;
-        });
-      });
-    }
-    $(document).ready( function() {
-        // preview
-        $('#file').change( function() {
-          var reader = new FileReader();
-          reader.onload = function(e) {
-            $('#preview').attr('src', e.target.result);
-          }
-          reader.readAsDataURL(this.files[0]);
-        });
-
-        // analysis
-        $('#file').change( function() {
-          var formData = new FormData();
-          formData.append('file', this.files[0], 'image');
-          $.ajax( {url: '/solve',
-                   type: 'POST',
-                   data: formData,
-                   processData: false,
-                   contentType: false,
-                   dataType: "json",
-                   success: r});
-        });
-    });
-  </script>
+  <script src="index.js"></script>
 
 </body>
 </html>

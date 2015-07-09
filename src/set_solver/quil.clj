@@ -33,13 +33,15 @@
   (.updatePixels p-img)
   p-img)
 
-(defn convert-mat [img]
-  (let [out-mat (Mat.)
-        n-pixels (* (.width img) (.height img))
+(defn convert-mat [img zoom]
+  (let [work (Mat.)
+        _ (Imgproc/resize img work (Size.) zoom zoom Imgproc/INTER_AREA)
+        out-mat (Mat.)
+        n-pixels (* (.width work) (.height work))
         b-array (byte-array (* 4 n-pixels))
         i-array (int-array n-pixels)
-        p-img   (q/create-image (.width img) (.height img) :rgb)]
-    (Imgproc/cvtColor img out-mat Imgproc/COLOR_RGB2RGBA 4)
+        p-img   (q/create-image (.width work) (.height work) :rgb)]
+    (Imgproc/cvtColor work out-mat Imgproc/COLOR_RGB2RGBA 4)
     (.get out-mat 0 0 b-array)
     (-> (ByteBuffer/wrap b-array)
         (.order ByteOrder/LITTLE_ENDIAN)
@@ -60,8 +62,11 @@
     :- (update-in state [:mat-converter :zoom] #(/ % 2))
     state))
 
+;(def image (Imgcodecs/imread "resources/pcl-bad-set1.jpg"))
+(def image (Imgcodecs/imread "resources/shadow5.jpg"))
+
 (defn setup2 []
-  (let [image (Imgcodecs/imread "resources/overhead.jpg")
+  (let [image image
         cards (find-cards image)
         card-props (map #(identify-card image %) cards)
         state {:image image
@@ -77,8 +82,10 @@
                                :zoom 1.0}}]
     state) )
 
+
 (defn update2 [state]
-  (assoc-in state [:mat-converter :p-img] (mat->p-img (:mat-converter state)))  )
+  (-> (assoc state :card-props (map #(identify-card image %) (find-cards image)))
+      (assoc-in [:mat-converter :p-img] (mat->p-img (:mat-converter state))))  )
 
 (defn draw2 [state]
   (q/background 0)
@@ -91,13 +98,12 @@
   (doseq [c (:card-props state)
           :let [mc (:mat-converter state)]]
 
-    (if (< 3 (:count c))
-      (q/image (convert-mat (:image c))
-               (- (* (:zoom mc) (-> c :bb .tl .x))
-                  (:left mc))
-               (- (* (:zoom mc) (-> c :bb .tl .y))
-                  (:top mc))
-               ))
+    (q/image (convert-mat (:image c) 0.4)
+             (- (* (:zoom mc) (-> c :bb .tl .x))
+                (:left mc))
+             (- (* (:zoom mc) (-> c :bb .tl .y))
+                (:top mc))
+             )
     (q/text (str (select-keys c [:count :fill :color :shape]))
           (- (* (:zoom mc) (-> c :bb .tl .x))
                (:left mc))
