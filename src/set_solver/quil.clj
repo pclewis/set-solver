@@ -45,11 +45,27 @@
      (.updatePixels p-img)
      p-img)))
 
+(defn resize-keep-ratio [mat max-width max-height]
+  (let [origAR (/ (.width mat) (.height mat))
+        newAR (/ max-width max-height)
+        ratio (if (> origAR newAR)
+                (/ max-width (.width mat))
+                (/ max-height (.height mat)))
+        new-size (Size. (* ratio (.width mat)) (* ratio (.height mat)))
+        new-mat (Mat/zeros new-size (.type mat))]
+    (Imgproc/resize mat new-mat new-size)
+    new-mat))
+
+(defn reasonable-size [mat]
+  (if (or (< 1200 (.width mat))
+          (< 1000 (.height mat)))
+    (resize-keep-ratio mat 1200 1000)
+    mat))
 
 (defn load-image [state file-name]
   (as-> state state
         (assoc state :image-file file-name)
-        (assoc state :image (Imgcodecs/imread (:image-file state)))))
+        (assoc state :image (reasonable-size (Imgcodecs/imread (:image-file state))))))
 
 (defn load-next-image [state]
   (load-image state
@@ -99,20 +115,16 @@
                        (file-seq)
                        (map str)
                        (filter #(re-matches #"resources/[^/]+\.(jpg|png|jpeg)" %))
-                       (sort))
-        image-file (first file-list)
-        image (Imgcodecs/imread image-file)]
-    {:zoom 1.0
-     :left 0
-     :top 0
-     :query ""
-     :show-cards false
-     :file-list file-list
-     :image-file image-file
-     :image image
-     :debug (atom nil)
-     :debug-avail (atom [])
-     :debug-selected (atom [])}))
+                       (sort))]
+    (merge (load-image {:file-list file-list} (first file-list))
+           {:zoom 1.0
+            :left 0
+            :top 0
+            :query ""
+            :show-cards false
+            :debug (atom nil)
+            :debug-avail (atom [])
+            :debug-selected (atom [])})))
 
 (defn debug [state f text]
   (let [query (.toLowerCase (:query state))]
