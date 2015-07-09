@@ -1,122 +1,190 @@
 (ns set-solver.quil
-  (:require [set-solver.util :refer [constrain]]
-            [set-solver.core :refer :all]
+  (:require [clojure.java.io :as io]
+            [clojure.math.numeric-tower :refer [round]]
+            [quil.applet :as a]
             [quil.core :as q]
             [quil.middleware :as m]
-            [clojure.math.numeric-tower :refer [round]])
-  (:import [org.opencv.core Mat Size Rect Point CvType]
-           [org.opencv.imgproc Imgproc]
+            [set-solver.core :refer :all]
+            [set-solver.util :refer [constrain]])
+  (:import [java.nio ByteBuffer ByteOrder]
+           [org.opencv.core Mat Size Rect Point CvType]
            [org.opencv.imgcodecs Imgcodecs]
-           [java.nio ByteBuffer ByteOrder]))
+           [org.opencv.imgproc Imgproc]))
 
-(defn mat->p-img [{:keys [canny in-mat tmp-mat out-mat b-array i-array p-img top left zoom]}]
-  ;
-  (let [rm (Mat.)
-        _(Imgproc/resize canny rm (Size.) zoom zoom Imgproc/INTER_AREA)
-        rw (min (.width out-mat) (.width rm))
-        rh (min (.height out-mat) (.height rm))
-        rs (Size. rw rh)
-        rect (Rect. (Point. (constrain left 0 (- (.width rm) (.width out-mat)))
-                            (constrain top 0 (- (.height rm) (.height out-mat))))
-                    rs) ]
-    (.copyTo (.submat rm rect)
-             (.submat tmp-mat (Rect. (Point. 0 0) rs)))
-    )
-  (Imgproc/cvtColor tmp-mat out-mat Imgproc/COLOR_RGB2RGBA 4)
-  (.get out-mat 0 0 b-array)
-  (-> (ByteBuffer/wrap b-array)
-      (.order ByteOrder/LITTLE_ENDIAN)
-      (.asIntBuffer)
-      (.get i-array))
-  (.loadPixels p-img)
-  (set! (.pixels p-img) (aclone i-array))
-  (.updatePixels p-img)
-  p-img)
 
-(defn convert-mat [img zoom]
-  (let [work (Mat.)
-        _ (Imgproc/resize img work (Size.) zoom zoom Imgproc/INTER_AREA)
-        out-mat (Mat.)
-        n-pixels (* (.width work) (.height work))
-        b-array (byte-array (* 4 n-pixels))
-        i-array (int-array n-pixels)
-        p-img   (q/create-image (.width work) (.height work) :rgb)]
-    (Imgproc/cvtColor work out-mat Imgproc/COLOR_RGB2RGBA 4)
-    (.get out-mat 0 0 b-array)
-    (-> (ByteBuffer/wrap b-array)
-        (.order ByteOrder/LITTLE_ENDIAN)
-        (.asIntBuffer)
-        (.get i-array))
-    (.loadPixels p-img)
-    (set! (.pixels p-img) (aclone i-array))
-    (.updatePixels p-img)
-    p-img))
+(defn mat->p-img
+  "Convert a Mat to a p-img"
+  ([mat]
+   (mat->p-img mat
+               (condp = (.type mat)
+                 CvType/CV_8U   Imgproc/COLOR_GRAY2RGBA
+                 CvType/CV_8UC3 Imgproc/COLOR_RGB2RGBA
+                 nil) ))
+  ([mat conv]
+   (let [n-pixels (* (.width mat) (.height mat))
+         b-array  (byte-array (* 4 n-pixels))
+         i-array  (int-array n-pixels)
+         p-img    (q/create-image (.width mat) (.height mat) :rgb)]
+
+     ;; convert color if necessary
+     (if (nil? conv)
+       (.get mat 0 0 b-array)
+       (let [tmp-mat (Mat. (.size mat) CvType/CV_8UC4)]
+         (Imgproc/cvtColor mat tmp-mat conv 4)
+         (.get tmp-mat 0 0 b-array)))
+
+     ;; convert byte array to integer array
+     (-> (ByteBuffer/wrap b-array)
+         (.order ByteOrder/LITTLE_ENDIAN)
+         (.asIntBuffer)
+         (.get i-array))
+
+     ;; load pixels into p-img
+     (.loadPixels p-img)
+     (set! (.pixels p-img) i-array)
+     (.updatePixels p-img)
+     p-img)))
+
+
+(defn load-image [state file-name]
+  (as-> state state
+        (assoc state :image-file file-name)
+        (assoc state :image (Imgcodecs/imread (:image-file state)))))
+
+(defn load-next-image [state]
+  (load-image state
+              (let [next-file (->> (:file-list state)
+                                   (partition-by #{(:image-file state)})
+                                   (filter #(< 1 (count %)))
+                                   (last)
+                                   (first))]
+                (or next-file (first (:file-list state))))))
+
+(defn load-prev-image [state]
+  (load-image state
+              (let [prev-file (->> (:file-list state)
+                                   (take-while (complement #{(:image-file state)}) )
+                                   (last))]
+                (or prev-file (last (:file-list state))))))
 
 (defn key-pressed [state e]
-  (case (:key e)
-    :j (update-in state [:mat-converter :top] #(+ 15 %))
-    :k (update-in state [:mat-converter :top] #(- % 15))
-    :l (update-in state [:mat-converter :left] #(+ 15 %))
-    :h (update-in state [:mat-converter :left] #(- % 15))
-    :+ (update-in state [:mat-converter :zoom] #(* % 2))
-    :- (update-in state [:mat-converter :zoom] #(/ % 2))
-    state))
+  (println e)
+  (if (:typing state)
+    (case (:key-code e)
+      10 (assoc state :typing false)
+      8  (update-in state [:query] #(apply str (drop-last %)))
+      27 (do (set! (.key (a/current-applet)) (char 0))
+             (reset! (:debug state) nil)
+             (assoc state :typing false :query ""))
+      (if (<= 32 (:key-code e) 128)
+        (update-in state [:query] #(str % (:raw-key e)))
+        state))
 
-;(def image (Imgcodecs/imread "resources/pcl-bad-set1.jpg"))
-(def image (Imgcodecs/imread "resources/shadow5.jpg"))
+    ;; not typing
+    (case (:key e)
+      :c (update-in state [:show-cards] not)
+      :j (update-in state [:top] #(+ 15 %))
+      :k (update-in state [:top] #(- % 15))
+      :l (update-in state [:left] #(+ 15 %))
+      :h (update-in state [:left] #(- % 15))
+      :+ (update-in state [:zoom] #(* % 2))
+      :- (update-in state [:zoom] #(/ % 2))
+      :/ (assoc state :typing true :query "")
+      :down (load-next-image state)
+      :up (load-prev-image state)
+      state)))
 
-(defn setup2 []
-  (let [image image
-        cards (find-cards image)
-        card-props (map #(identify-card image %) cards)
-        state {:image image
-               :card-props card-props
-               :mat-converter {:canny   image
-                               :tmp-mat (Mat. height width CvType/CV_8UC3)
-                               :out-mat (Mat. height width CvType/CV_8UC4)
-                               :b-array (byte-array (* 4 n-pixels))
-                               :i-array (int-array n-pixels)
-                               :p-img   (q/create-image width height :rgb)
-                               :top 0
-                               :left 0
-                               :zoom 1.0}}]
-    state) )
+(defn setup []
+  (let [file-list (->> (io/file "resources/")
+                       (file-seq)
+                       (map str)
+                       (filter #(re-matches #"resources/[^/]+\.(jpg|png|jpeg)" %))
+                       (sort))
+        image-file (first file-list)
+        image (Imgcodecs/imread image-file)]
+    {:zoom 1.0
+     :left 0
+     :top 0
+     :query ""
+     :show-cards false
+     :file-list file-list
+     :image-file image-file
+     :image image
+     :debug (atom nil)
+     :debug-avail (atom [])
+     :debug-selected (atom [])}))
 
+(defn debug [state f text]
+  (let [query (.toLowerCase (:query state))]
+    (swap! (:debug-avail state) conj text)
+    (when (and (not-empty query)
+               (.contains (.toLowerCase text) query))
+      (swap! (:debug-selected state) conj text)
+      (reset! (:debug state) (.clone (f))))))
 
-(defn update2 [state]
-  (-> (assoc state :card-props (map #(identify-card image %) (find-cards image)))
-      (assoc-in [:mat-converter :p-img] (mat->p-img (:mat-converter state))))  )
+(defn update [state]
+  (reset! (:debug-avail state) [])
+  (reset! (:debug-selected state) [])
+  (as-> state state
+        (assoc state :cards (find-cards-debug (:image state) (partial debug state)))
+        (assoc state :card-props (map #(identify-card (:image state) %) (:cards state)))))
 
-(defn draw2 [state]
+(defn draw [state]
   (q/background 0)
-  (q/image (:p-img (:mat-converter state)) 1 1)
+
+  (let [img (mat->p-img (or (deref (:debug state)) (:image state)))]
+    (q/image img
+             (- (:left state)) (- (:top state))
+             (* (:zoom state) (.width img))
+             (* (:zoom state) (.height img))))
   (q/fill 0 0 0 192)
   (q/rect 0 0 300 60)
   (q/fill 255)
-  (q/text (str (select-keys (:mat-converter state) [:left :top :zoom])) 15 15)
+  (q/text (str (select-keys state [:left :top :zoom :query])) 15 15)
   (q/text (str (round (q/current-frame-rate)) "/" (q/target-frame-rate)) 15 45)
-  (doseq [c (:card-props state)
-          :let [mc (:mat-converter state)]]
 
-    (q/image (convert-mat (:image c) 0.4)
-             (- (* (:zoom mc) (-> c :bb .tl .x))
-                (:left mc))
-             (- (* (:zoom mc) (-> c :bb .tl .y))
-                (:top mc))
-             )
-    (q/text (str (select-keys c [:count :fill :color :shape]))
-          (- (* (:zoom mc) (-> c :bb .tl .x))
-               (:left mc))
-           (- (* (:zoom mc) (-> c :bb .tl .y))
-               (:top mc))
-            )))
+  (doseq [[line i] (map vector (deref (:debug-avail state)) (range))
+          :let [visible (some #{line} (deref (:debug-selected state)))]]
+    (if visible
+      (q/fill 0 255 0)
+      (q/fill 255))
+    (q/text line 15 (+ 60 (* i 15))))
+
+  (doseq [[line i] (map vector (:file-list state) (range))
+          :let [visible (= line (:image-file state))]]
+    (q/fill 0 0 0 192)
+    (q/rect (- width 100) (* i 15) 100 15)
+    (if visible
+      (q/fill 0 255 0)
+      (q/fill 255))
+    (q/text (.replace line "resources/" "") (- width 100) (+ 15 (* i 15))))
+
+  (q/fill 255)
+  (when (:show-cards state)
+    (doseq [c (:card-props state)
+            :let [card-img (mat->p-img (:image c))]]
+
+      (q/image card-img
+               (- (* (:zoom state) (-> c :bb .tl .x))
+                  (:left state))
+               (- (* (:zoom state) (-> c :bb .tl .y))
+                  (:top state))
+               (* (.width card-img) 0.5)
+               (* (.height card-img) 0.5)
+               )
+      (q/text (str (select-keys c [:count :fill :color :shape]))
+              (- (* (:zoom state) (-> c :bb .tl .x))
+                 (:left state))
+              (- (* (:zoom state) (-> c :bb .tl .y))
+                 (:top state))
+              ))))
 
 (q/defsketch hi
   :title "hi"
   :size [width height]
-  :setup setup2
-  :update update2
-  :draw draw2
+  :setup setup
+  :update update
+  :draw draw
   :key-pressed key-pressed
   :features [:keep-on-top]
   :middleware [m/fun-mode])

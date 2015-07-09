@@ -217,8 +217,8 @@
         hierarchy (MatOfInt4.)
         contours (java.util.LinkedList.)]
     (Imgproc/cvtColor img img-gray Imgproc/COLOR_BGR2GRAY)
-    (Imgproc/blur img-gray img-gray (Size. 3 3))
-    (Imgproc/Canny img-gray canny-output 60 100)
+    ;(Imgproc/blur img-gray img-gray (Size. 3 3))
+    (Imgproc/Canny img-gray canny-output 70 90)
     (Imgproc/dilate canny-output canny-output (Mat.))
     (if (< (min (.width img) (.height img)) 1000)
       (Imgproc/erode canny-output canny-output (Mat.)))
@@ -226,7 +226,46 @@
 
     (->> contours
          (filter #(< 250 (Imgproc/contourArea %)))
-         (filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
+         ;(filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
+         (filter rectangle?)
+         ;; eliminate overlapping contours
+         (reduce (fn [cs c]
+                   (if (some #(rect-close-enough? (Imgproc/boundingRect %) (Imgproc/boundingRect c)) cs)
+                     cs
+                     (conj cs c)))
+                 []))))
+
+
+(defn find-cards-debug
+  "Return set of contours representing cards in img."
+  [img debug-fn]
+  (let [img-gray (Mat.)
+        canny-output (Mat.)
+        hierarchy (MatOfInt4.)
+        contours (java.util.LinkedList.)]
+    (Imgproc/cvtColor img img-gray Imgproc/COLOR_BGR2GRAY)
+    (debug-fn (constantly img-gray) "Grayscale image")
+
+    (Imgproc/Canny img-gray canny-output 70 90)
+    (debug-fn (constantly canny-output) "Canny output")
+
+    (Imgproc/dilate canny-output canny-output (Mat.))
+    (debug-fn (constantly canny-output) "Dilated")
+
+    (if (< (min (.width img) (.height img)) 1000)
+      (Imgproc/erode canny-output canny-output (Mat.)))
+    (debug-fn (constantly canny-output) "Eroded")
+
+    (Imgproc/findContours canny-output contours hierarchy Imgproc/RETR_TREE Imgproc/CHAIN_APPROX_TC89_KCOS (Point. 0 0))
+    (debug-fn
+     (fn [] (let [canvas (Mat/zeros (.size canny-output) CvType/CV_8U)]
+             (Imgproc/drawContours canvas contours -1 (Scalar. 255 0 0) 1)
+             canvas))
+     "Contours")
+
+    (->> contours
+         (filter #(< 250 (Imgproc/contourArea %)))
+         ;(filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
          (filter rectangle?)
          ;; eliminate overlapping contours
          (reduce (fn [cs c]
