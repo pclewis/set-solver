@@ -129,6 +129,38 @@
                           true)
     (= 4 (.rows approx2f))))
 
+(defn sort-rectangle-points
+  "Sort a list of points in specified order
+   Default: [top-left top-right bottom-right bottom-left]"
+  ([pts] (sort-rectangle-points pts [[-1 -1] [1 -1] [1 1] [-1 1]]))
+  ([pts pt-order]
+   (let [center (center-point pts)]
+     (sort-by #(.indexOf pt-order
+                         [(sgn (- (.x %) (.x center)))
+                          (sgn (- (.y %) (.y center)))])
+              pts))))
+
+(defn angle-3p
+  "Given points A B C defining lines AB and BC, the angle at B"
+  [a b c]
+  (let [[[p2x p2y] [p1x p1y] [p3x p3y]] (map #(vector (.x %) (.y %)) [a b c])
+        p12 (line-len p1x p1y p2x p2y)
+        p13 (line-len p1x p1y p3x p3y)
+        p23 (line-len p2x p2y p3x p3y)]
+
+    ;; acos((p12^2 + p13^2) - (p23^2)) / (2 * p12 * p13)
+    (Math/acos
+     (/ (- (+ (* p12 p12)
+              (* p13 p13))
+           (* p23 p23))
+        (* 2 p12 p13)))))
+
+(defn sort-rectangle-points-angle
+  [pts]
+   (let [center (center-point pts)]
+     (sort-by #(Math/atan2 (- (.y %) (.y center)) (- (.x center) (.x %))) pts)) )
+
+
 (defn rectangle?
   "True if contour can be approximated by a polygon with 4 points that meet at more-or-less right angles."
   [contour]
@@ -139,12 +171,14 @@
                           (* 0.02 (Imgproc/arcLength c2f true))
                           true)
     (when (= 4 (.rows approx2f))
-      (let [[[p2x p2y] [p1x p1y] [p3x p3y]] (map #(vector (.x %) (.y %)) (.toList approx2f))
-            p12 (line-len p1x p1y p2x p2y)
-            p13 (line-len p1x p1y p3x p3y)
-            p23 (line-len p2x p2y p3x p3y)
-            angle (Math/acos
-                   (/ (- (+ (* p12 p12) (* p13 p13))
-                         (* p23 p23))
-                      (* 2 p12 p13)))]
-        (< 1.3 angle 1.7)))))
+      (let [pts (sort-rectangle-points-angle (.toList approx2f))
+            angle1 (apply angle-3p (take 3 pts))
+            angle2 (apply angle-3p (take-last 3 pts))]
+        (and (close-enough? angle1 (/ Math/PI 2) (/ Math/PI 12))
+             (close-enough? angle2 (/ Math/PI 2) (/ Math/PI 12))
+             (< 3.0 (+ angle1 angle2) 3.3))))))
+
+(defn enumerate
+  "Lazy seq of [i x] for each x in xs and i in (range)"
+  [xs]
+  (map-indexed vector xs))

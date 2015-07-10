@@ -71,7 +71,7 @@
   (load-image state
               (let [next-file (->> (:file-list state)
                                    (partition-by #{(:image-file state)})
-                                   (filter #(< 1 (count %)))
+                                   (remove #{(list (:image-file state))})
                                    (last)
                                    (first))]
                 (or next-file (first (:file-list state))))))
@@ -89,6 +89,7 @@
     (case (:key-code e)
       10 (assoc state :typing false)
       8  (update-in state [:query] #(apply str (drop-last %)))
+      47 (assoc state :query "") ;; /
       27 (do (set! (.key (a/current-applet)) (char 0))
              (reset! (:debug state) nil)
              (assoc state :typing false :query ""))
@@ -130,6 +131,7 @@
   (let [query (.toLowerCase (:query state))]
     (swap! (:debug-avail state) conj text)
     (when (and (not-empty query)
+               (nil? (deref (:debug state)))
                (.contains (.toLowerCase text) query))
       (swap! (:debug-selected state) conj text)
       (reset! (:debug state) (.clone (f))))))
@@ -137,8 +139,9 @@
 (defn update [state]
   (reset! (:debug-avail state) [])
   (reset! (:debug-selected state) [])
+  (reset! (:debug state) nil)
   (as-> state state
-        (assoc state :cards (find-cards-debug (:image state) (partial debug state)))
+        (assoc state :cards (find-cards-blob (:image state) (partial debug state)))
         (assoc state :card-props (map #(identify-card (:image state) %) (:cards state)))))
 
 (defn draw [state]
