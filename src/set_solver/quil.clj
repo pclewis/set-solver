@@ -5,7 +5,7 @@
             [quil.core :as q]
             [quil.middleware :as m]
             [set-solver.core :refer :all]
-            [set-solver.util :refer [constrain]])
+            [set-solver.util :refer [constrain enumerate]])
   (:import [java.nio ByteBuffer ByteOrder]
            [org.opencv.core Mat Size Rect Point CvType]
            [org.opencv.imgcodecs Imgcodecs]
@@ -100,6 +100,7 @@
     ;; not typing
     (case (:key e)
       :c (update-in state [:show-cards] not)
+      :q (update-in state [:query-filter] not)
       :j (update-in state [:top] #(+ 15 %))
       :k (update-in state [:top] #(- % 15))
       :l (update-in state [:left] #(+ 15 %))
@@ -109,6 +110,9 @@
       :/ (assoc state :typing true :query "")
       :down (load-next-image state)
       :up (load-prev-image state)
+      :left (update-in state [:debug-offset] dec)
+      :right (update-in state [:debug-offset] inc)
+      :0 (assoc state :debug-offset 0)
       state)))
 
 (defn setup []
@@ -123,15 +127,25 @@
             :top 0
             :query ""
             :show-cards false
+            :query-filter true
             :debug (atom nil)
+            :debug-offset 0
             :debug-avail (atom [])
             :debug-selected (atom [])})))
 
 (defn debug [state f text]
-  (let [query (.toLowerCase (:query state))]
-    (swap! (:debug-avail state) conj text)
+  (let [query (.toLowerCase (:query state))
+        offset (->> (:debug-avail state)
+                    (deref)
+                    (filter #(.contains (.toLowerCase %) query))
+                    (count))]
+    (when (or (not (:query-filter state))
+            (.contains (.toLowerCase text) query))
+      (swap! (:debug-avail state) conj text))
+
     (when (and (not-empty query)
                (nil? (deref (:debug state)))
+               (= offset (:debug-offset state))
                (.contains (.toLowerCase text) query))
       (swap! (:debug-selected state) conj text)
       (reset! (:debug state) (.clone (f))))))
@@ -155,10 +169,10 @@
   (q/fill 0 0 0 192)
   (q/rect 0 0 300 60)
   (q/fill 255)
-  (q/text (str (select-keys state [:left :top :zoom :query])) 15 15)
+  (q/text (str (select-keys state [:left :top :zoom :query :show-cards :query-filter :debug-offset])) 15 15)
   (q/text (str (round (q/current-frame-rate)) "/" (q/target-frame-rate)) 15 45)
 
-  (doseq [[line i] (map vector (deref (:debug-avail state)) (range))
+  (doseq [[i line] (enumerate (deref (:debug-avail state)))
           :let [visible (some #{line} (deref (:debug-selected state)))]]
     (if visible
       (q/fill 0 255 0)
