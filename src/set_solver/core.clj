@@ -217,40 +217,85 @@
           []
           contours))
 
+(defn remove-contained-rects
+  [contours]
+  (let [rects (map #(Imgproc/boundingRect %) contours)]
+    (remove (fn [c] (let [r (Imgproc/boundingRect c)]
+                     (some #(and (> (.area %) (.area r))
+                                 (or (.contains % (.tl r))
+                                     (.contains % (.br r))))
+                           rects)))
+            contours)))
+
 (defn- debug-rect [img debug-fn contours]
   (debug-fn
-   (fn []
-     (let [canvas (Mat/zeros (.size img) CvType/CV_8U)]
-       (doseq [contour contours]
-         (let [
-               c2f (MatOfPoint2f.)
-               approx2f (MatOfPoint2f.)
-               approx (MatOfPoint.)
-               _ (.convertTo contour c2f CvType/CV_32FC2)
-               _ (comment (.push_back c2f (doto (MatOfPoint2f.)
-                                            (.fromList (take 1 (.toList c2f))))))
-               _ (Imgproc/approxPolyDP c2f approx2f
-                                       (* 0.02 (Imgproc/arcLength c2f true))
-                                       true)
-               _ (.convertTo approx2f approx CvType/CV_32S)
-               color (case (round (Math/abs (- 4 (.rows approx))))
-                       0 (Scalar. 255 0 0)
-                       1 (Scalar. 192 0 0)
-                       2 (Scalar. 128 0 0)
-                       (Scalar. 32 0 0))]
-           (Imgproc/drawContours canvas (list approx) 0 color)
-           (when (= 4 (.rows approx2f))
-             (let [pts (sort-rectangle-points-angle (.toList approx2f))
-                   angle1 (apply angle-3p (take 3 pts))
-                   angle2 (apply angle-3p (take-last 3 pts))]
-               (Imgproc/circle canvas (nth pts 1) 6 (Scalar. 255 0 0))
-               (Imgproc/circle canvas (nth pts 2) 6 (Scalar. 255 0 0) -1)
-               (Imgproc/circle canvas (nth pts 3) 6 (Scalar. 255 0 0))
+   "rectangles"
+   (fn [canvas]
+     (doseq [contour contours]
+       (let [c2f (MatOfPoint2f.)
+             approx2f (MatOfPoint2f.)
+             approx (MatOfPoint.)
+             _ (.convertTo contour c2f CvType/CV_32FC2)
+             _ (comment (.push_back c2f (doto (MatOfPoint2f.)
+                                          (.fromList (take 1 (.toList c2f))))))
+             _ (Imgproc/approxPolyDP c2f approx2f
+                                     (* 0.02 (Imgproc/arcLength c2f true))
+                                     true)
+             _ (.convertTo approx2f approx CvType/CV_32S)
+             color (case (round (Math/abs (- 4 (.rows approx))))
+                     0 (Scalar. 255 0 0)
+                     1 (Scalar. 192 0 0)
+                     2 (Scalar. 128 0 0)
+                     (Scalar. 32 0 0))]
+         (Imgproc/drawContours canvas (list approx) 0 color)
+         (when (= 4 (.rows approx2f))
+           (let [pts (sort-rectangle-points-angle (.toList approx2f))
+                 angle1 (apply angle-3p (take 3 pts))
+                 angle2 (apply angle-3p (take-last 3 pts))]
+             (Imgproc/circle canvas (nth pts 0) 6 (Scalar. 255 0 0))
+             (Imgproc/circle canvas (nth pts 1) 6 (Scalar. 255 0 0) -1)
+             (Imgproc/circle canvas (nth pts 2) 6 (Scalar. 255 0 0))
+             (when-not (< 1.3 angle1 1.7)
                (Imgproc/putText canvas (format "%.1f" angle1) (nth pts 2)
-                                Core/FONT_HERSHEY_COMPLEX 1 (Scalar. 255 0 0))))))
-                canvas))
-            "rectangles")
+                                Core/FONT_HERSHEY_COMPLEX 1 (Scalar. 255 0 0)))))))
+     ))
   contours)
+
+
+(defn debug-rectanglify
+  [debug-fn combos]
+  (debug-fn "rectanglify"
+   (fn [canvas]
+     (doseq [[i pts] (enumerate combos)
+             :let [color (if (pts-rectangle? pts)
+                           (Scalar. 255 0 0)
+                           (Scalar. 64 0 0))]]
+       (doseq [[pt1 pt2] (connected-combinations pts 2)
+               :let [ofs (Point. 0 (* i -50))]]
+         (Imgproc/line canvas (point-add pt1 ofs) (point-add pt2 ofs)
+                       color 1)))))
+  combos)
+
+(defn rectanglify
+  [contour debug-fn]
+  (let [c2f (MatOfPoint2f.)
+        approx2f (MatOfPoint2f.)
+        approx (MatOfPoint.)
+        _ (.convertTo contour c2f CvType/CV_32FC2)
+        _ (Imgproc/approxPolyDP c2f approx2f
+                                (* 0.02 (Imgproc/arcLength c2f true))
+                                true)
+        _ (.convertTo approx2f approx CvType/CV_32S)
+        ]
+    (when (< 4 (.rows approx2f) 8)
+      (let [pts (sort-rectangle-points-angle (.toList approx2f))]
+        (when-let [new-contour (->> (connected-combinations pts 4)
+                                    ;(debug-rectanglify debug-fn)
+                                    (filter pts-rectangle?)
+                                    (first))]
+          (.fromList approx2f new-contour)
+          (.convertTo approx2f contour CvType/CV_32S))))
+    contour))
 
 
 (defn- find-cards
@@ -259,28 +304,28 @@
     (Imgproc/findContours img contours (MatOfInt4.)
                           Imgproc/RETR_LIST
                           Imgproc/CHAIN_APPROX_SIMPLE)
-   (debug-fn
-     (fn [] (let [canvas (Mat/zeros (.size img) CvType/CV_8U)]
-             (Imgproc/drawContours canvas contours -1
-                                   (Scalar. 255 0 0) 1)
-             canvas))
-     "Contours-pre")
+
+   (debug-fn "Contours-pre"
+    #(Imgproc/drawContours % contours -1 (Scalar. 255 0 0) 1))
 
     (let [contours
           (->> contours
-               (filter #(< 250 (Math/abs (Imgproc/contourArea %))))
-               (filter #(> 0.4 (match-shapes-i1 card-shape (contour-hu-invariants %))))
+               (filter #(< 2000 (Math/abs (Imgproc/contourArea %))
+                           (* (.rows img) (.cols img) 0.5)))
+               (filter #(> 500 (.rows %)))
+               (filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
+               (map #(rectanglify % debug-fn))
                (debug-rect img debug-fn)
                (filter rectangle?)
-               distinct-contours
-               )]
-      (debug-fn
-       (fn [] (let [canvas (Mat/zeros (.size img) CvType/CV_8U)]
-               (doseq [[i c] (enumerate contours)]
-                 (Imgproc/drawContours canvas contours i
-                                       (Scalar. (rand-int 255) 0 0) 1))
-               canvas))
-       "Contours-post")
+               distinct-contours)]
+      (debug-fn "Contours-post"
+       (fn [canvas]
+         (doseq [[i c] (enumerate contours)]
+           (Imgproc/drawContours canvas contours i
+                                 (Scalar. (rand-int 255) 0 0) 1)
+           (Imgproc/putText canvas (str (.rows c))
+                            (point-add (first (.toList c)) (Point. 0 50))
+                            Core/FONT_HERSHEY_COMPLEX 1 (Scalar. 255 0 0)))))
       contours)))
 
 (defn find-cards-blob
@@ -295,49 +340,45 @@
         abs-diff (Mat. (.size img) CvType/CV_8U)]
     (.read fd "test.yaml")
     (.detect fd img kp)
-    (debug-fn
-       (fn [] (let [canvas (Mat/zeros (.size img) CvType/CV_8U)]
-               (Features2d/drawKeypoints img kp canvas)
-               canvas))
-       "keypoints")
+    (debug-fn "keypoints" #(Features2d/drawKeypoints img kp % (Scalar. 255 0 0) 1))
     (Imgproc/cvtColor img img-hsl Imgproc/COLOR_RGB2HSV)
     (Core/split img-hsl channels)
-    (debug-fn (constantly (.get channels 0)) "hue")
-    (debug-fn (constantly (.get channels 1)) "saturation")
-    (debug-fn (constantly (.get channels 2)) "value")
+    (debug-fn "hue" (constantly (.get channels 0)))
+    (debug-fn "saturation" (constantly (.get channels 1)))
+    (debug-fn "value" (constantly (.get channels 2)))
     (Imgproc/threshold (.get channels 1) sat-mask 60 255
                        Imgproc/THRESH_BINARY_INV)
-    (debug-fn (constantly sat-mask) "satmask")
+    (debug-fn "satmask" (constantly sat-mask))
 
 
     ;; FIXME ugly
     (let [result
-          (flatten
-           (doall
-            (for [[i p] (enumerate (.toList kp))]
-              (do
-                (.setTo mask (Scalar. 0 0 0))
-                (Imgproc/circle mask (.pt p) 30 (Scalar. 255 255 255) 3)
-                (Core/multiply sat-mask mask mask)
-                (debug-fn (constantly mask) (str "Blobmask" i))
-                (let [avg (Core/mean img mask)
-                      canny (Mat.)]
-                  (Core/absdiff img avg abs-diff)
-                  (debug-fn (constantly abs-diff) (str "absdiff" i))
-                  (Imgproc/cvtColor abs-diff abs-diff Imgproc/COLOR_BGR2GRAY)
-                  (Imgproc/threshold abs-diff abs-diff 60 255
-                                     Imgproc/THRESH_BINARY_INV)
-                  ;(Imgproc/Canny abs-diff canny 40 50)
-                  (Imgproc/erode abs-diff canny (Mat.))
-                  (debug-fn (constantly canny) (str "canny" i))
-                  (Imgproc/dilate canny canny (Mat.))
-                  (find-cards canny #(debug-fn %1 (str %2 "-" i))))))))]
+          (remove-contained-rects
+           (distinct-contours
+            (flatten
+             (doall
+              (for [[i p] (enumerate (.toList kp))]
+                (do
+                  (.setTo mask (Scalar. 0 0 0))
+                  (Imgproc/circle mask (.pt p) 30 (Scalar. 255 255 255) 3)
+                  (Core/multiply sat-mask mask mask)
+                  (debug-fn (str "Blobmask" i) (constantly mask))
+                  (let [avg (Core/mean img mask)
+                        threshed (Mat. (.size img) CvType/CV_8U)]
+                    (Core/absdiff img avg abs-diff)
+                    (debug-fn (str "absdiff" i) (constantly abs-diff))
+                    (Imgproc/cvtColor abs-diff abs-diff Imgproc/COLOR_BGR2GRAY)
+                    (doall
+                     (for [thresh (range 30 150 50)]
+                       (do
+                         (Imgproc/threshold abs-diff threshed thresh 255
+                                            Imgproc/THRESH_BINARY_INV)
+                         (Imgproc/erode threshed threshed (Mat.))
+                         (debug-fn (str "threshed-" thresh "-" i) (constantly threshed))
+                         (find-cards threshed #(debug-fn (str %1 "-" thresh "-" i) %2))))))))))))]
 
-      (debug-fn
-       (fn [] (let [canvas (Mat/zeros (.size img) CvType/CV_8U)]
-               (Imgproc/drawContours canvas result -1 (Scalar. 255 0 0) 1)
-               canvas))
-       "FINAL Contours")
+      (debug-fn "FINAL Contours"
+       #(Imgproc/drawContours % result -1 (Scalar. 255 0 0) 1))
 
       result)
 
@@ -345,16 +386,16 @@
      (doseq [p (.toList kp)]
         (Imgproc/circle mask (.pt p) 30 (Scalar. 255 255 255) 3))
       (Core/multiply sat-mask mask mask)
-      (debug-fn (constantly mask) "Blob mask")
+      (debug-fn "Blob mask" (constantly mask))
       (let [avg (Core/mean img mask)
             canny (Mat.)]
         (Core/absdiff img avg abs-diff)
         (Imgproc/cvtColor abs-diff abs-diff Imgproc/COLOR_BGR2GRAY)
         (Imgproc/threshold abs-diff abs-diff 40 255
                            Imgproc/THRESH_BINARY_INV)
-        (debug-fn (constantly abs-diff) "abs-diff")
+        (debug-fn "abs-diff" (constantly abs-diff))
         (Imgproc/Canny abs-diff canny 40 50)
-        (debug-fn (constantly canny) "canny")
+        (debug-fn "canny" (constantly canny))
         (find-cards canny debug-fn) ))))
 
 
@@ -370,29 +411,29 @@
         contours (java.util.LinkedList.)
         channels (java.util.LinkedList.)]
     (Imgproc/cvtColor img img-gray Imgproc/COLOR_BGR2GRAY)
-    (debug-fn (constantly img-gray) "Grayscale image")
+    (debug-fn "Grayscale image" (constantly img-gray))
 
     (Imgproc/cvtColor img img-hsl Imgproc/COLOR_RGB2HSV)
     (Core/split img-hsl channels)
-    (debug-fn (constantly (.get channels 0)) "hue")
-    (debug-fn (constantly (.get channels 1)) "saturation")
-    (debug-fn (constantly (.get channels 2)) "value")
+    (debug-fn "hue" (constantly (.get channels 0)))
+    (debug-fn "saturation" (constantly (.get channels 1)))
+    (debug-fn "value" (constantly (.get channels 2)))
     (Core/add (.get channels 1) (.get channels 2) img-sl)
     (debug-fn (constantly img-sl) "plus")
 
     (Core/split img channels)
-    (debug-fn (constantly (.get channels 0)) "red")
-    (debug-fn (constantly (.get channels 1)) "green")
-    (debug-fn (constantly (.get channels 2)) "blue")
+    (debug-fn "red" (constantly (.get channels 0)))
+    (debug-fn "green" (constantly (.get channels 1)))
+    (debug-fn "blue" (constantly (.get channels 2)))
 
     (Core/divide (.get channels 0) (Scalar. 3 0 0) (.get channels 0))
     (Core/divide (.get channels 1) (Scalar. 3 0 0) (.get channels 1))
     (Core/divide (.get channels 2) (Scalar. 3 0 0) (.get channels 2))
     (Core/add (.get channels 0) (.get channels 1) img-intensity)
     (Core/add img-intensity (.get channels 2) img-intensity)
-    (debug-fn (constantly img-intensity) "intensity-base")
+    (debug-fn "intensity-base" (constantly img-intensity))
 
-   (debug-fn
+   (debug-fn "Intensity-adaptive"
      (fn [] (let [canvas (Mat/zeros (.size img) CvType/CV_8U)
                  canvas2 (Mat/zeros (.size img) CvType/CV_8UC3)
                  lines (MatOfInt4.)]
@@ -425,8 +466,7 @@
                                (Point. (nth l 2) (nth l 3))
                                color
                                2)))
-             canvas))
-     "Intensity-adaptive")
+             canvas)))
 
    (comment
      (let [fd (FeatureDetector/create FeatureDetector/SIMPLEBLOB)]
@@ -434,8 +474,8 @@
 
      )
 
-   (debug-fn
-    (fn [] (let [canvas (Mat/zeros (.size img) CvType/CV_8U)
+   (debug-fn "Blobs"
+     (fn [] (let [canvas (Mat/zeros (.size img) CvType/CV_8U)
                 fd (FeatureDetector/create FeatureDetector/SIMPLEBLOB)
                 kp (MatOfKeyPoint.)]
             (.read fd "test.yaml")
@@ -444,25 +484,20 @@
             (doseq [p (.toList kp)]
               ;(println (.size p))
               )
-             canvas))
-     "Blobs")
+             canvas)))
 
     (Imgproc/Canny img-gray canny-output 70 90)
-    (debug-fn (constantly canny-output) "Canny output")
+    (debug-fn "Canny output" (constantly canny-output))
 
     (Imgproc/dilate canny-output canny-output (Mat.))
-    (debug-fn (constantly canny-output) "Dilated")
+    (debug-fn "Dilated" (constantly canny-output))
 
     (if (< (min (.width img) (.height img)) 1000)
       (Imgproc/erode canny-output canny-output (Mat.)))
-    (debug-fn (constantly canny-output) "Eroded")
+    (debug-fn "Eroded" (constantly canny-output))
 
     (Imgproc/findContours canny-output contours hierarchy Imgproc/RETR_TREE Imgproc/CHAIN_APPROX_TC89_KCOS (Point. 0 0))
-    (debug-fn
-     (fn [] (let [canvas (Mat/zeros (.size canny-output) CvType/CV_8U)]
-             (Imgproc/drawContours canvas contours -1 (Scalar. 255 0 0) 1)
-             canvas))
-     "Contours")
+    (debug-fn "Contours" #(Imgproc/drawContours % contours -1 (Scalar. 255 0 0) 1))
 
     (->> contours
          (filter #(< 250 (Imgproc/contourArea %)))

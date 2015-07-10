@@ -7,7 +7,7 @@
             [set-solver.core :refer :all]
             [set-solver.util :refer [constrain enumerate]])
   (:import [java.nio ByteBuffer ByteOrder]
-           [org.opencv.core Mat Size Rect Point CvType]
+           [org.opencv.core Mat Size Rect Point CvType Scalar]
            [org.opencv.imgcodecs Imgcodecs]
            [org.opencv.imgproc Imgproc]))
 
@@ -65,7 +65,8 @@
 (defn load-image [state file-name]
   (as-> state state
         (assoc state :image-file file-name)
-        (assoc state :image (reasonable-size (Imgcodecs/imread (:image-file state))))))
+        (assoc state :image (reasonable-size (Imgcodecs/imread (:image-file state))))
+        (assoc state :debug-canvas (Mat/zeros (.size (:image state)) CvType/CV_8U))))
 
 (defn load-next-image [state]
   (load-image state
@@ -133,7 +134,7 @@
             :debug-avail (atom [])
             :debug-selected (atom [])})))
 
-(defn debug [state f text]
+(defn debug [state text f]
   (let [query (.toLowerCase (:query state))
         offset (->> (:debug-avail state)
                     (deref)
@@ -148,7 +149,11 @@
                (= offset (:debug-offset state))
                (.contains (.toLowerCase text) query))
       (swap! (:debug-selected state) conj text)
-      (reset! (:debug state) (.clone (f))))))
+      (let [canvas (:debug-canvas state)
+            _ (.setTo canvas (Scalar. 0 0 0))
+            result (f canvas)
+            img (if result (.clone result) canvas)]
+        (reset! (:debug state) img)))))
 
 (defn update [state]
   (reset! (:debug-avail state) [])

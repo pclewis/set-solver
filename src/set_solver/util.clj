@@ -158,8 +158,23 @@
 (defn sort-rectangle-points-angle
   [pts]
    (let [center (center-point pts)]
-     (sort-by #(Math/atan2 (- (.y %) (.y center)) (- (.x center) (.x %))) pts)) )
+     (sort-by #(Math/atan2 (- (.y %) (.y center))
+                           (- (.x center) (.x %)))
+              pts)) )
 
+(defn connected-combinations
+  [coll n]
+  (let [lc (cycle coll)]
+    (apply map vector coll (map #(drop (inc %) lc) (range (dec n))))))
+
+(defn pts-rectangle?
+  [pts]
+  (let [[angle1 angle2 angle3 angle4 :as angles]
+        (map #(apply angle-3p %) (connected-combinations pts 3))]
+    (and (every? #(close-enough? % (/ Math/PI 2) (/ Math/PI 8)) angles)
+         (close-enough? angle1 angle3 0.2)
+         (close-enough? angle2 angle4 0.2)
+         (close-enough? (+ angle1 angle2) (Math/PI) 0.1))) )
 
 (defn rectangle?
   "True if contour can be approximated by a polygon with 4 points that meet at more-or-less right angles."
@@ -171,12 +186,7 @@
                           (* 0.02 (Imgproc/arcLength c2f true))
                           true)
     (when (= 4 (.rows approx2f))
-      (let [pts (sort-rectangle-points-angle (.toList approx2f))
-            angle1 (apply angle-3p (take 3 pts))
-            angle2 (apply angle-3p (take-last 3 pts))]
-        (and (close-enough? angle1 (/ Math/PI 2) (/ Math/PI 12))
-             (close-enough? angle2 (/ Math/PI 2) (/ Math/PI 12))
-             (< 3.0 (+ angle1 angle2) 3.3))))))
+      (pts-rectangle? (sort-rectangle-points-angle (.toList approx2f))))))
 
 (defn enumerate
   "Lazy seq of [i x] for each x in xs and i in (range)"
