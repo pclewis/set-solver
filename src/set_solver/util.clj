@@ -67,7 +67,7 @@
 (defn scalar-to-hsl
   "Convert a scalar RGB color to HSL"
   [color]
-  (apply colors/rgb-to-hsl (take 3 (.val color))))
+  (apply colors/rgb-to-hsl (reverse (take 3 (.val color)))))
 
 (defn hu-invariants
   "Calculate Hu invariants from moments"
