@@ -9,7 +9,8 @@
   (:import [java.nio ByteBuffer ByteOrder]
            [org.opencv.core Mat Size Rect Point CvType Scalar]
            [org.opencv.imgcodecs Imgcodecs]
-           [org.opencv.imgproc Imgproc]))
+           [org.opencv.imgproc Imgproc]
+           [java.lang.management ManagementFactory]))
 
 
 (defn mat->p-img
@@ -132,7 +133,8 @@
             :debug (atom nil)
             :debug-offset 0
             :debug-avail (atom [])
-            :debug-selected (atom [])})))
+            :debug-selected (atom [])
+            :pid (re-find #"\d+" (.getName (ManagementFactory/getRuntimeMXBean)))})))
 
 (defn debug [state text f]
   (let [query (.toLowerCase (:query state))
@@ -155,13 +157,25 @@
             img (if result (.clone result) canvas)]
         (reset! (:debug state) img)))))
 
+(defn get-rss [pid]
+  (-> (str "/proc/" pid "/statm")
+      (java.io.FileReader.) ;; buffered reader doesn't always work on /proc
+      (slurp)
+      (clojure.string/split #"\s+")
+      (second)
+      (Integer/parseInt)
+      (* 4096)))
+
 (defn update [state]
   (reset! (:debug-avail state) [])
   (reset! (:debug-selected state) [])
   (reset! (:debug state) nil)
   (as-> state state
         (assoc state :cards (find-cards-blob (:image state) (partial debug state)))
-        (assoc state :card-props (map #(identify-card (:image state) %) (:cards state)))))
+        (assoc state :card-props (map #(identify-card (:image state) %) (:cards state)))
+        (assoc state :rss (get-rss (:pid state)))))
+
+
 
 (defn draw [state]
   (q/background 0)
@@ -193,6 +207,15 @@
       (q/fill 255))
     (q/text (.replace line "resources/" "") (- width 100) (+ 15 (* i 15))))
 
+  (q/fill 0 0 0 192)
+  (q/rect (- width 200) (- height 30) 200 30)
+  (q/fill 255)
+  (let [rt (Runtime/getRuntime)]
+    (q/text (format "%.1f / %.1f MB"
+                    (float (/ (.totalMemory rt) 1024 1024))
+                    (float (/ (:rss state) 1024 1024)))
+            (- width 175) (- height 15)))
+
   (q/fill 255)
   (when (:show-cards state)
     (doseq [c (:card-props state)
@@ -212,6 +235,8 @@
               (- (* (:zoom state) (-> c :bb .tl .y))
                  (:top state))
               ))))
+
+
 
 (q/defsketch hi
   :title "hi"
