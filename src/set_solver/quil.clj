@@ -117,6 +117,13 @@
       :0 (assoc state :debug-offset 0)
       state)))
 
+(defn mouse-dragged [state {:keys [x y p-x p-y button]}]
+  (if-not (= button :left)
+    state
+    (-> state
+        (update-in [:left]  #(+ (- p-x x) %))
+        (update-in [:top] #(+ (- p-y y) %)))))
+
 (defn setup []
   (let [file-list (->> (io/file "resources/")
                        (file-seq)
@@ -245,5 +252,6 @@
   :update update
   :draw draw
   :key-pressed key-pressed
+  :mouse-dragged mouse-dragged
   :features [:keep-on-top]
   :middleware [m/fun-mode])
