@@ -161,7 +161,9 @@
       (let [canvas (:debug-canvas state)
             _ (.setTo canvas (Scalar. 0 0 0))
             result (f canvas)
-            img (if result (.clone result) canvas)]
+            img (if (= (type result) org.opencv.core.Mat)
+                  (.clone result)
+                  canvas)]
         (reset! (:debug state) img)))))
 
 (defn get-rss [pid]
@@ -178,11 +180,9 @@
   (reset! (:debug-selected state) [])
   (reset! (:debug state) nil)
   (as-> state state
-        (assoc state :cards (find-cards-blob (:image state) (partial debug state)))
+        (assoc state :cards (find-cards-intensity (:image state) (partial debug state)))
         (assoc state :card-props (map #(identify-card (:image state) %) (:cards state)))
         (assoc state :rss (get-rss (:pid state)))))
-
-
 
 (defn draw [state]
   (q/background 0)

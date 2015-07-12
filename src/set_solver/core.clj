@@ -28,6 +28,28 @@
                  1.3848375876118038E-8
                  1.1843630759414145E-13])
 
+;; STRATEGY THE BEST: just use intensity
+;;  it works surprisingly well
+
+;; STRATEGY 1: use saturation, fix shadows
+;;  idea: cards are low-saturation, high-lightness
+;;        shadows are mid-saturation, mid-lightness
+;;  so: negate saturation channel, add to lightness
+;;  this is pretty good at removing shadows from card faces,
+;;  but not sure that's really a problem that needs solving.
+;;  does not seem to really find anything that intensity does not.
+
+
+;; STRATEGY 3: find shapes, extrapolate card location
+;; caveat: hu moments not very reliable without fixing perspective distortion
+
+;; FIXUP 1: Pick 4 points on contour, see if they're the right shape
+;; FIXUP 2: Pick 5 points on contour, ABCDE, where angle at B, C, and D is correct.
+;;          Extend line BA and DE to meet at F, see if shape BCDF works.
+;; FIXUP 3: Pick 4 points ABCD where A and D are on the edge of the image
+;;          extend A and D to correct ratio and connet
+
+
 (defn color-name [hue sat]
   (cond (< 60 hue 180) :green
         (< 25 hue 340) :purple
@@ -219,11 +241,15 @@
 
 (defn remove-contained-rects
   [contours]
-  (let [rects (map #(Imgproc/boundingRect %) contours)]
-    (remove (fn [c] (let [r (Imgproc/boundingRect c)]
-                     (some #(and (> (.area %) (.area r))
-                                 (or (.contains % (.tl r))
-                                     (.contains % (.br r))))
+  (let [rects (map #(vector % (Imgproc/boundingRect %)) contours)]
+    (remove (fn [c] (let [r (min-area-rect c)
+                         center (.center r)
+                         area (* (-> r .size .width)
+                                 (-> r .size .height))]
+                     (some (fn [[oc or]]
+                             (and (not= oc c)
+                                  (> (.area or) area)
+                                  (.contains or center)))
                            rects)))
             contours)))
 
@@ -297,6 +323,11 @@
           (.convertTo approx2f contour CvType/CV_32S))))
     contour))
 
+(defn min-area-rect
+  [contour]
+  (let [c2f (MatOfPoint2f.)]
+    (.convertTo contour c2f CvType/CV_32FC2)
+    (Imgproc/minAreaRect c2f)))
 
 (defn- find-cards
   [img debug-fn]
@@ -317,6 +348,7 @@
                (map #(rectanglify % debug-fn))
                (debug-rect img debug-fn)
                (filter rectangle?)
+               (filter #(< 1.0 (rect-ratio (.size (min-area-rect %))) 2.5))
                distinct-contours)]
       (debug-fn "Contours-post"
        (fn [canvas]
@@ -327,6 +359,101 @@
                             (point-add (first (.toList c)) (Point. 0 50))
                             Core/FONT_HERSHEY_COMPLEX 1 (Scalar. 255 0 0)))))
       contours)))
+
+(defn- intensity
+  [rgb-img]
+  (let [channels (java.util.LinkedList.)]
+    (Core/split rgb-img channels)
+    (Core/divide (.get channels 0) (Scalar. 3 0 0) (.get channels 0))
+    (Core/divide (.get channels 1) (Scalar. 3 0 0) (.get channels 1))
+    (Core/divide (.get channels 2) (Scalar. 3 0 0) (.get channels 2))
+    (Core/add (.get channels 0) (.get channels 1) (.get channels 0))
+    (Core/add (.get channels 0) (.get channels 2) (.get channels 0))
+    (.release (.get channels 1))
+    (.release (.get channels 2))
+    (.get channels 0)))
+
+(defn find-cards-intensity
+  [img debug-fn]
+  (let [img-i (intensity img)
+        work (Mat. (.size img) CvType/CV_8U)]
+    (debug-fn "intensity" (constantly img-i))
+    (let [result
+          (-> (for [thresh (range 64 193 32)]
+                (do (Imgproc/threshold img-i work thresh 255 Imgproc/THRESH_BINARY)
+                    (find-cards work #(debug-fn (str "thresh-" thresh "-" %1) %2))))
+              (doall)
+              (flatten)
+              (distinct-contours)
+              (remove-contained-rects))]
+      (debug-fn "FINAL Contours" #(Imgproc/drawContours % result -1 (Scalar. 255 0 0) 1))
+      result)))
+
+(defn find-cards-experimenting
+  [img debug-fn]
+  (let [img-hsl (Mat. (.size img) CvType/CV_8UC3)
+        channels (java.util.LinkedList.)]
+    (Imgproc/cvtColor img img-hsl Imgproc/COLOR_RGB2HSV)
+    (Core/split img-hsl channels)
+    (let [[h s l] (vec channels)
+          not-s (Mat.)
+          s-thresh (Mat.)
+          i (intensity img)]
+      (Core/bitwise_not s not-s)
+      (debug-fn "hue" (constantly h))
+      (debug-fn "lightness" (constantly l))
+      (debug-fn "saturation" (constantly s))
+      (debug-fn "inverse saturation" (constantly not-s))
+      (debug-fn "intensity" (constantly i))
+      (debug-fn (str "add" )
+                (fn [canvas]
+                  (Core/add not-s l canvas)))
+      (debug-fn (str "add-morph" )
+                (fn [canvas]
+                  (Core/add not-s l canvas)
+                  (Imgproc/morphologyEx canvas canvas Imgproc/MORPH_GRADIENT
+                                        (Mat/ones 5 5 CvType/CV_8U))
+                  (comment
+                    (Imgproc/threshold canvas canvas 64 255
+                                       (bit-or Imgproc/THRESH_OTSU
+                                               Imgproc/THRESH_BINARY)))))
+
+      (debug-fn (str "intensity-morph" )
+                (fn [canvas]
+                  (Imgproc/morphologyEx i canvas Imgproc/MORPH_GRADIENT
+                                        (Mat/ones 5 5 CvType/CV_8U))
+                  (comment (Imgproc/adaptiveThreshold canvas canvas 255
+                                                      Imgproc/ADAPTIVE_THRESH_MEAN_C
+                                                      Imgproc/THRESH_BINARY_INV
+                                                      9 3))
+                  (Imgproc/threshold canvas canvas 64 255
+                                     (bit-or Imgproc/THRESH_OTSU
+                                             Imgproc/THRESH_BINARY))
+                  ;(Imgproc/threshold canvas canvas 64 255 Imgproc/THRESH_BINARY)
+                  ))
+      (debug-fn (str "Mul" )
+                  (fn [canvas]
+                    (Core/multiply not-s l canvas)))
+      (doseq [thresh (range 32 255 16)]
+        (Imgproc/threshold s s-thresh thresh 255 Imgproc/THRESH_BINARY_INV)
+        (comment
+          (Imgproc/adaptiveThreshold s s 255
+                                     Imgproc/ADAPTIVE_THRESH_MEAN_C
+                                     Imgproc/THRESH_BINARY_INV
+                                     9 3))
+
+        (debug-fn (str "Saturation Threshold-" thresh)
+                  (constantly s-thresh))
+        (debug-fn (str "Intensity Threshold-" thresh)
+                  (fn [canvas] (Imgproc/threshold i canvas thresh 255 Imgproc/THRESH_BINARY)))
+        (debug-fn (str "add-thresh-" thresh )
+                (fn [canvas]
+                  (Core/add not-s l canvas)
+                  (Imgproc/threshold canvas canvas thresh 255 Imgproc/THRESH_BINARY)))))
+
+
+    )
+  [])
 
 (defn find-cards-blob
   "Find cards using blob detection"
