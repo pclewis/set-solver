@@ -7,13 +7,17 @@
             [clojure.math.combinatorics :as combo]
             [set-solver.reusable-buffer :refer [reusable]]
             [set-solver.match-shapes :refer [match-shapes-i1 match-shapes-i2 match-shapes-i3]]
-            [set-solver.util :refer :all])
+            [set-solver.util :refer :all]
+            [set-solver.perspective-ratio :refer [perspective-ratio]])
 
   (:import [java.nio ByteBuffer ByteOrder]
             [org.opencv.core Core CvType Moments Mat MatOfDouble MatOfByte MatOfInt4 MatOfFloat MatOfPoint MatOfPoint2f Size TermCriteria Point Scalar Rect MatOfKeyPoint]
             [org.opencv.imgproc Imgproc]
             [org.opencv.imgcodecs Imgcodecs]
             [org.opencv.features2d FeatureDetector Features2d]))
+
+
+;; card dimensions: 2 1/4" x 3 1/2"
 
 (def frame-rate 15)
 
@@ -73,6 +77,13 @@
                 (every? #{1 3}))
           (combo/combinations cards 3)))
 
+(defn should-rotate? [pts img]
+  (let [pt-list (mapcat #(list (.x %) (.y %)) pts)
+        center [(/ (.width img) 2.0)
+                (/ (.height img) 2.0)]
+        ratio (apply perspective-ratio (concat pt-list center))]
+    (> ratio 1.2)))
+
 (defn identify-card
   [img contour]
   (let [target (Mat/zeros 600 300 CvType/CV_8UC3)
@@ -80,10 +91,6 @@
         tright (-> target .cols dec)
         tbottom (-> target .rows dec)
         br (Imgproc/boundingRect contour)
-        rot (if (> (.width br) (.height br))
-              #(concat (rest %) (take 1 %))
-              identity)
-        _ (.fromList target-points (rot (map #(Point. %1 %2) [0 tright tright 0] [0 0 tbottom tbottom])))
         c2f (MatOfPoint2f.)
         approx2f (MatOfPoint2f.)
         approx (MatOfPoint.)
@@ -94,11 +101,14 @@
         _ (.convertTo approx2f approx CvType/CV_32S)
         approx2fl (.toList approx2f)
         center (center-point approx2fl)
-        pt-order [[-1 -1] [1 -1] [1 1] [-1 1]]
-        a2f-sorted (sort-by #(.indexOf pt-order
-                                       [(sgn (- (.x %) (.x center)))
-                                        (sgn (- (.y %) (.y center)))]) approx2fl)
+        a2f-sorted (sort-rectangle-points-angle (.toList approx2f))
         _ (.fromList approx2f a2f-sorted)
+        rot (if (should-rotate? a2f-sorted img)
+              #(concat (rest %) (take 1 %))
+              identity)
+        _ (.fromList target-points (rot (map #(Point. %1 %2)
+                                             [tright 0 0       tright]
+                                             [0      0 tbottom tbottom])))
         trans-mat (Imgproc/getPerspectiveTransform approx2f target-points)
         target-gray (Mat/zeros (.size target) CvType/CV_8U)
         target-edges (Mat. (.size target) CvType/CV_8U)]
@@ -138,7 +148,7 @@
           [edge-h edge-s edge-l] (scalar-to-hsl cmean)
           cname (scalar-color-name cmean)
           _ (Imgproc/findContours target-edges card-contours card-hierarchy Imgproc/RETR_EXTERNAL Imgproc/CHAIN_APPROX_SIMPLE)
-          card-contours (filter #(< 200 (Imgproc/contourArea %)) card-contours)
+          card-contours (filter #(< 1 (Imgproc/contourArea %)) card-contours)
           sname (shape-name (first card-contours))
           mask (Mat/zeros (.size target) CvType/CV_8U)
           _ (Imgproc/drawContours mask card-contours -1 (Scalar. 255 255 255) -1)
@@ -239,6 +249,12 @@
           []
           contours))
 
+(defn min-area-rect
+  [contour]
+  (let [c2f (MatOfPoint2f.)]
+    (.convertTo contour c2f CvType/CV_32FC2)
+    (Imgproc/minAreaRect c2f)))
+
 (defn remove-contained-rects
   [contours]
   (let [rects (map #(vector % (Imgproc/boundingRect %)) contours)]
@@ -277,12 +293,26 @@
          (when (= 4 (.rows approx2f))
            (let [pts (sort-rectangle-points-angle (.toList approx2f))
                  angle1 (apply angle-3p (take 3 pts))
-                 angle2 (apply angle-3p (take-last 3 pts))]
-             (Imgproc/circle canvas (nth pts 0) 6 (Scalar. 255 0 0))
-             (Imgproc/circle canvas (nth pts 1) 6 (Scalar. 255 0 0) -1)
-             (Imgproc/circle canvas (nth pts 2) 6 (Scalar. 255 0 0))
-             (when-not (< 1.3 angle1 1.7)
-               (Imgproc/putText canvas (format "%.1f" angle1) (nth pts 2)
+                 angle2 (apply angle-3p (take-last 3 pts))
+                 [p0 p1 p2 p3] (vec pts)]
+             (Imgproc/circle canvas p0 6 (Scalar. 255 0 0))
+             (Imgproc/circle canvas p1 6 (Scalar. 255 0 0) -1)
+             (Imgproc/circle canvas p2 12 (Scalar. 255 0 0))
+             (Imgproc/line canvas p0 p2 (Scalar. 255 0 0) 1)
+             (Imgproc/line canvas p1 p3 (Scalar. 255 0 0) 1)
+             (Imgproc/circle canvas (center-point pts) 6 (Scalar. 255 0 0))
+             (let [[v0x v0y] (intersect-lines [(.x p0) (.y p0) (.x p1) (.y p1)]
+                                              [(.x p2) (.y p2) (.x p3) (.y p3)])
+                   [v1x v1y] (intersect-lines [(.x p1) (.y p1) (.x p2) (.y p2)]
+                                              [(.x p3) (.y p3) (.x p0) (.y p0)])]
+               (Imgproc/putText canvas (format "V0=(%.0f,%.0f)" v0x v0y)
+                                (center-point pts)
+                                Core/FONT_HERSHEY_COMPLEX 0.5 (Scalar. 255 0 0))
+               (Imgproc/putText canvas (format "V1=(%.0f,%.0f)" v1x v1y)
+                                (point-add (center-point pts) (Point. 0 25))
+                                Core/FONT_HERSHEY_COMPLEX 0.5 (Scalar. 255 0 0)))
+             (when-not (pts-rectangle? pts)
+               (Imgproc/putText canvas (format "%.1f" angle1) p2
                                 Core/FONT_HERSHEY_COMPLEX 1 (Scalar. 255 0 0)))))))
      ))
   contours)
@@ -322,12 +352,6 @@
           (.fromList approx2f new-contour)
           (.convertTo approx2f contour CvType/CV_32S))))
     contour))
-
-(defn min-area-rect
-  [contour]
-  (let [c2f (MatOfPoint2f.)]
-    (.convertTo contour c2f CvType/CV_32FC2)
-    (Imgproc/minAreaRect c2f)))
 
 (defn- find-cards
   [img debug-fn]
