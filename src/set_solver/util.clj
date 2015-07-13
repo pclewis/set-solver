@@ -2,8 +2,16 @@
   (:require [com.evocomputing.colors :as colors]
             [clojure.math.combinatorics :as combo]
             [set-solver.reusable-buffer :refer [reusable]])
-  (:import [org.opencv.core CvType Point MatOfDouble MatOfPoint2f]
+  (:import [org.opencv.core CvType Point Mat MatOfDouble MatOfPoint MatOfPoint2f]
            [org.opencv.imgproc Imgproc] ) )
+
+(defn mat-seq
+  [coll]
+  (seq
+   (condp = (type coll)
+     org.opencv.core.MatOfPoint (.toList coll)
+     org.opencv.core.MatOfPoint2f (.toList coll)
+     coll)))
 
 (defn constrain
   "Force number into range"
@@ -162,14 +170,44 @@
                            (- (.x center) (.x %)))
               pts)) )
 
+(defn shuffle-rectangle-points-angle
+  [pts]
+
+  (let [center (center-point pts)
+        pts-with-angle (map #(vector % (Math/atan2 (- (.y %) (.y center))
+                                                   (- (.x center) (.x %))))
+                            pts)
+        min-angle (apply min (map second pts-with-angle))]
+    (->> (split-with #(not= (second %) min-angle) pts-with-angle)
+         (reverse)
+         (apply concat)
+         (map first))))
+
 (defn connected-combinations
   [coll n]
   (let [lc (cycle coll)]
     (apply map vector coll (map #(drop (inc %) lc) (range (dec n))))))
 
+(defn simplify-shape
+  [contour]
+  (let [c2f (MatOfPoint2f.)
+        approx2f (MatOfPoint2f.)
+        approx (MatOfPoint.)]
+    (.convertTo contour c2f CvType/CV_32FC2)
+    (Imgproc/approxPolyDP c2f
+                          approx2f
+                          (* 0.02 (Imgproc/arcLength c2f true))
+                          true)
+    (.fromList approx2f (shuffle-rectangle-points-angle (.toList approx2f)))
+    (.convertTo approx2f approx CvType/CV_32S)
+    (.release approx2f)
+    (.release c2f)
+    approx))
+
 (defn pts-rectangle?
   [pts]
-  (let [[angle1 angle2 angle3 angle4 :as angles]
+  (let [pts (sort-rectangle-points-angle (mat-seq pts))
+        [angle1 angle2 angle3 angle4 :as angles]
         (map #(apply angle-3p %) (connected-combinations pts 3))]
     (and (every? #(close-enough? % (/ Math/PI 2) (/ Math/PI 8)) angles)
          (close-enough? angle1 angle3 0.2)
@@ -179,14 +217,9 @@
 (defn rectangle?
   "True if contour can be approximated by a polygon with 4 points that meet at more-or-less right angles."
   [contour]
-  (let [c2f (reusable (MatOfPoint2f.))
-        approx2f (reusable (MatOfPoint2f.))]
-    (.convertTo contour c2f CvType/CV_32FC2)
-    (Imgproc/approxPolyDP c2f approx2f
-                          (* 0.02 (Imgproc/arcLength c2f true))
-                          true)
-    (when (= 4 (.rows approx2f))
-      (pts-rectangle? (sort-rectangle-points-angle (.toList approx2f))))))
+  (if (= 4 (.rows contour))
+    (pts-rectangle? (.toList contour))
+    (pts-rectangle? (.toList (simplify-shape contour)))))
 
 (defn enumerate
   "Lazy seq of [i x] for each x in xs and i in (range)"

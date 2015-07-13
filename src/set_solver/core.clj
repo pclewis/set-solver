@@ -8,7 +8,7 @@
             [set-solver.reusable-buffer :refer [reusable]]
             [set-solver.match-shapes :refer [match-shapes-i1 match-shapes-i2 match-shapes-i3]]
             [set-solver.util :refer :all]
-            [set-solver.perspective-ratio :refer [perspective-ratio]])
+            [set-solver.perspective-ratio :refer [estimate-focal-length rectangle-aspect-ratio ]])
 
   (:import [java.nio ByteBuffer ByteOrder]
             [org.opencv.core Core CvType Moments Mat MatOfDouble MatOfByte MatOfInt4 MatOfFloat MatOfPoint MatOfPoint2f Size TermCriteria Point Scalar Rect MatOfKeyPoint]
@@ -77,12 +77,23 @@
                 (every? #{1 3}))
           (combo/combinations cards 3)))
 
-(defn should-rotate? [pts img]
-  (let [pt-list (mapcat #(list (.x %) (.y %)) pts)
+(defn get-perspective-ratio [pts img]
+  (let [pt-list (mapcat #(list (.x %) (.y %)) (mat-seq pts))
         center [(/ (.width img) 2.0)
                 (/ (.height img) 2.0)]
-        ratio (apply perspective-ratio (concat pt-list center))]
-    (> ratio 1.2)))
+        result (apply rectangle-aspect-ratio (concat pt-list center))]
+    ;(println pt-list center result)
+    result))
+
+(defn efl [pts img]
+  (let [pt-list (mapcat #(list (.x %) (.y %)) (mat-seq pts))
+        center [(/ (.width img) 2.0)
+                (/ (.height img) 2.0)]
+        result (apply estimate-focal-length (concat pt-list center))]
+    result))
+
+(defn should-rotate? [pts img]
+  (> (get-perspective-ratio pts img) 1.2))
 
 (defn identify-card
   [img contour]
@@ -274,33 +285,33 @@
    "rectangles"
    (fn [canvas]
      (doseq [contour contours]
-       (let [c2f (MatOfPoint2f.)
-             approx2f (MatOfPoint2f.)
-             approx (MatOfPoint.)
-             _ (.convertTo contour c2f CvType/CV_32FC2)
-             _ (comment (.push_back c2f (doto (MatOfPoint2f.)
-                                          (.fromList (take 1 (.toList c2f))))))
-             _ (Imgproc/approxPolyDP c2f approx2f
-                                     (* 0.02 (Imgproc/arcLength c2f true))
-                                     true)
-             _ (.convertTo approx2f approx CvType/CV_32S)
+       (let [approx (simplify-shape contour)
              color (case (round (Math/abs (- 4 (.rows approx))))
                      0 (Scalar. 255 0 0)
                      1 (Scalar. 192 0 0)
                      2 (Scalar. 128 0 0)
                      (Scalar. 32 0 0))]
          (Imgproc/drawContours canvas (list approx) 0 color)
-         (when (= 4 (.rows approx2f))
-           (let [pts (sort-rectangle-points-angle (.toList approx2f))
+         (when (= 4 (.rows approx))
+           (let [pts (shuffle-rectangle-points-angle (.toList approx))
+                 center (center-point pts)
                  angle1 (apply angle-3p (take 3 pts))
                  angle2 (apply angle-3p (take-last 3 pts))
-                 [p0 p1 p2 p3] (vec pts)]
+                 [p0 p1 p2 p3] (vec pts)
+                 ratio (get-perspective-ratio pts canvas)
+                 ;ratio (if (> ratio 1.2) (- (/ 1 ratio)) ratio)
+                 ]
+             (doseq [pt pts]
+               (Imgproc/putText canvas (format "%.1f" (Math/atan2 (- (.y pt) (.y center))
+                                                                  (- (.x center) (.x pt))))
+                                pt
+                                Core/FONT_HERSHEY_COMPLEX 0.6 (Scalar. 255 0 0) 2))
              (Imgproc/circle canvas p0 6 (Scalar. 255 0 0))
              (Imgproc/circle canvas p1 6 (Scalar. 255 0 0) -1)
              (Imgproc/circle canvas p2 12 (Scalar. 255 0 0))
              (Imgproc/line canvas p0 p2 (Scalar. 255 0 0) 1)
              (Imgproc/line canvas p1 p3 (Scalar. 255 0 0) 1)
-             (Imgproc/circle canvas (center-point pts) 6 (Scalar. 255 0 0))
+             (Imgproc/circle canvas center 6 (Scalar. 255 0 0))
              (let [[v0x v0y] (intersect-lines [(.x p0) (.y p0) (.x p1) (.y p1)]
                                               [(.x p2) (.y p2) (.x p3) (.y p3)])
                    [v1x v1y] (intersect-lines [(.x p1) (.y p1) (.x p2) (.y p2)]
@@ -357,7 +368,7 @@
   [img debug-fn]
   (let [contours (java.util.LinkedList.)]
     (Imgproc/findContours img contours (MatOfInt4.)
-                          Imgproc/RETR_LIST
+                          Imgproc/RETR_EXTERNAL
                           Imgproc/CHAIN_APPROX_SIMPLE)
 
    (debug-fn "Contours-pre"
@@ -365,14 +376,17 @@
 
     (let [contours
           (->> contours
-               (filter #(< 2000 (Math/abs (Imgproc/contourArea %))
-                           (* (.rows img) (.cols img) 0.5)))
+               (filter #(< (* (.total img) 0.01)
+                           (Math/abs (Imgproc/contourArea %))
+                           (* (.total img) 0.5)))
                (filter #(> 500 (.rows %)))
-               (filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
+               ;(filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
+               (map simplify-shape)
                (map #(rectanglify % debug-fn))
                (debug-rect img debug-fn)
                (filter rectangle?)
-               (filter #(< 1.0 (rect-ratio (.size (min-area-rect %))) 2.5))
+               (filter #(correct-aspect-ratio? img %))
+               ;(filter #(< 1.0 (rect-ratio (.size (min-area-rect %))) 2.5))
                distinct-contours)]
       (debug-fn "Contours-post"
        (fn [canvas]
@@ -402,6 +416,23 @@
   (let [img-i (intensity img)
         work (Mat. (.size img) CvType/CV_8U)]
     (debug-fn "intensity" (constantly img-i))
+    (debug-fn "intensity canny"
+              (fn [canvas]
+                (Imgproc/Canny (.clone img-i) canvas 40 200)))
+
+    (debug-fn "canny lines"
+              (fn [canvas]
+                (let [lines (MatOfInt4.)]
+                  (Imgproc/Canny (.clone img-i) canvas 40 200)
+                  (Imgproc/HoughLinesP canvas lines 1 (/ Math/PI 90) 10 20 15)
+                  (.setTo canvas (Scalar. 0 0 0))
+                  (doseq [[l i] (map vector (partition 4 (.toList lines)) (range))
+                          :let [color (Scalar. (mod (* i 16) 256) 0 0)] ]
+                    (Imgproc/line canvas
+                                  (Point. (nth l 0) (nth l 1))
+                                  (Point. (nth l 2) (nth l 3))
+                                  color
+                                  2)))))
     (let [result
           (-> (for [thresh (range 64 193 32)]
                 (do (Imgproc/threshold img-i work thresh 255 Imgproc/THRESH_BINARY)
@@ -409,7 +440,8 @@
               (doall)
               (flatten)
               (distinct-contours)
-              (remove-contained-rects))]
+              ;(remove-contained-rects)
+              )]
       (debug-fn "FINAL Contours" #(Imgproc/drawContours % result -1 (Scalar. 255 0 0) 1))
       result)))
 

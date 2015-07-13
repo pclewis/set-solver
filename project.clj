@@ -15,6 +15,8 @@
                  [org.clojure/math.numeric-tower "0.0.4"]
                  [compojure "1.3.4"]
                  [http-kit "2.1.18"]
+                 [net.mikera/core.matrix "0.36.1"]
+                 [net.mikera/vectorz-clj "0.30.1"]
                  ;; required for ring.middleware.multipart-params, normally included with ex jetty
                  [javax.servlet/servlet-api "2.5"]
                  [org.clojure/data.json "0.2.6"]]
