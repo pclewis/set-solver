@@ -77,13 +77,15 @@
                 (every? #{1 3}))
           (combo/combinations cards 3)))
 
-(defn get-perspective-ratio [pts img]
-  (let [pt-list (mapcat #(list (.x %) (.y %)) (mat-seq pts))
-        center [(/ (.width img) 2.0)
-                (/ (.height img) 2.0)]
-        result (apply rectangle-aspect-ratio (concat pt-list center))]
-    ;(println pt-list center result)
-    result))
+(defn get-perspective-ratio
+  ([pts img] (get-perspective-ratio pts img nil))
+  ([pts img focal-length]
+   (let [pt-list (mapcat #(list (.x %) (.y %)) (mat-seq pts))
+         center [(/ (.width img) 2.0)
+                 (/ (.height img) 2.0)]
+         result (apply rectangle-aspect-ratio (concat pt-list center [focal-length]))]
+     ;;(println pt-list center result)
+     result)))
 
 (defn efl [pts img]
   (let [pt-list (mapcat #(list (.x %) (.y %)) (mat-seq pts))
@@ -266,6 +268,16 @@
     (.convertTo contour c2f CvType/CV_32FC2)
     (Imgproc/minAreaRect c2f)))
 
+(defn correct-aspect-ratio?
+  ([img pts]
+   (correct-aspect-ratio? img pts nil))
+  ([img pts focal-length]
+   (let [correct-ratio (/ 2.25 3.5)
+         margin-of-error 0.30
+         ratio (get-perspective-ratio pts img focal-length)
+         ratio (if (> ratio 1.2) (/ 1 ratio) ratio)]
+     (close-enough? ratio correct-ratio (* correct-ratio margin-of-error)))))
+
 (defn remove-contained-rects
   [contours]
   (let [rects (map #(vector % (Imgproc/boundingRect %)) contours)]
@@ -305,7 +317,7 @@
                (Imgproc/putText canvas (format "%.1f" (Math/atan2 (- (.y pt) (.y center))
                                                                   (- (.x center) (.x pt))))
                                 pt
-                                Core/FONT_HERSHEY_COMPLEX 0.6 (Scalar. 255 0 0) 2))
+                                Core/FONT_HERSHEY_COMPLEX 0.3 (Scalar. 255 0 0) 1))
              (Imgproc/circle canvas p0 6 (Scalar. 255 0 0))
              (Imgproc/circle canvas p1 6 (Scalar. 255 0 0) -1)
              (Imgproc/circle canvas p2 12 (Scalar. 255 0 0))
@@ -322,6 +334,12 @@
                (Imgproc/putText canvas (format "V1=(%.0f,%.0f)" v1x v1y)
                                 (point-add (center-point pts) (Point. 0 25))
                                 Core/FONT_HERSHEY_COMPLEX 0.5 (Scalar. 255 0 0)))
+             (Imgproc/putText canvas (format "ratio=%.2f" ratio)
+                                (point-add (center-point pts) (Point. 0 50))
+                                Core/FONT_HERSHEY_COMPLEX 0.5 (Scalar. 255 0 0))
+             (Imgproc/putText canvas (format "f=%.2f" (efl pts canvas))
+                                (point-add (center-point pts) (Point. 0 75))
+                                Core/FONT_HERSHEY_COMPLEX 0.5 (Scalar. 255 0 0))
              (when-not (pts-rectangle? pts)
                (Imgproc/putText canvas (format "%.1f" angle1) p2
                                 Core/FONT_HERSHEY_COMPLEX 1 (Scalar. 255 0 0)))))))
@@ -342,6 +360,19 @@
          (Imgproc/line canvas (point-add pt1 ofs) (point-add pt2 ofs)
                        color 1)))))
   combos)
+
+(defn pts->contour
+  [pts]
+  (doto (MatOfPoint.) (.fromList pts)))
+
+(comment
+  (defn rectanglify
+    [pts debug-fn]
+    (let [pts (mat-seq pts)]
+      (->> (concat (rectanglify-1 pts))
+           (flatten)
+           (map pts->contour)
+           (distinct-contours)))))
 
 (defn rectanglify
   [contour debug-fn]
@@ -384,10 +415,13 @@
                (map simplify-shape)
                (map #(rectanglify % debug-fn))
                (debug-rect img debug-fn)
-               (filter rectangle?)
-               (filter #(correct-aspect-ratio? img %))
-               ;(filter #(< 1.0 (rect-ratio (.size (min-area-rect %))) 2.5))
-               distinct-contours)]
+               (filter rectangle?))
+
+          focal-length (when (not-empty contours) (median (map #(efl % img) contours)))
+
+          contours (->> contours
+                        (filter #(correct-aspect-ratio? img % focal-length))
+                        distinct-contours)]
       (debug-fn "Contours-post"
        (fn [canvas]
          (doseq [[i c] (enumerate contours)]
@@ -438,9 +472,11 @@
                 (do (Imgproc/threshold img-i work thresh 255 Imgproc/THRESH_BINARY)
                     (find-cards work #(debug-fn (str "thresh-" thresh "-" %1) %2))))
               (doall)
+              (concat (do (Imgproc/Canny img-i work 40 200)
+                          (find-cards work #(debug-fn (str "canny-" %1) %2))))
               (flatten)
               (distinct-contours)
-              ;(remove-contained-rects)
+              (remove-contained-rects)
               )]
       (debug-fn "FINAL Contours" #(Imgproc/drawContours % result -1 (Scalar. 255 0 0) 1))
       result)))
