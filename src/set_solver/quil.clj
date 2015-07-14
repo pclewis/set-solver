@@ -71,7 +71,7 @@
 
 (defn load-next-image [state]
   (load-image state
-              (let [next-file (->> (:file-list state)
+              (let [next-file (->> (filter-query (:file-query state) (:file-list state))
                                    (partition-by #{(:image-file state)})
                                    (remove #{(list (:image-file state))})
                                    (last)
@@ -80,23 +80,23 @@
 
 (defn load-prev-image [state]
   (load-image state
-              (let [prev-file (->> (:file-list state)
+              (let [prev-file (->> (filter-query (:file-query state) (:file-list state))
                                    (take-while (complement #{(:image-file state)}) )
                                    (last))]
                 (or prev-file (last (:file-list state))))))
 
 (defn key-pressed [state e]
   (println e)
-  (if (:typing state)
+  (if-let [field (:typing state)]
     (case (:key-code e)
       10 (assoc state :typing false)
-      8  (update-in state [:query] #(apply str (drop-last %)))
-      47 (assoc state :query "") ;; /
+      8  (update-in state [field] #(apply str (drop-last %)))
+      47 (assoc state field "") ;; /
       27 (do (set! (.key (a/current-applet)) (char 0))
-             (reset! (:debug state) nil)
-             (assoc state :typing false :query ""))
+             (when (= :query field) (reset! (:debug state) nil))
+             (assoc state :typing false field ""))
       (if (<= 32 (:key-code e) 128)
-        (update-in state [:query] #(str % (:raw-key e)))
+        (update-in state [field] #(str % (:raw-key e)))
         state))
 
     ;; not typing
@@ -109,7 +109,8 @@
       :h (update-in state [:left] #(- % 15))
       :+ (update-in state [:zoom] #(* % 2))
       :- (update-in state [:zoom] #(/ % 2))
-      :/ (assoc state :typing true :query "")
+      :/ (assoc state :typing :query :query "")
+      :f (assoc state :typing :file-query :file-query "")
       :down (load-next-image state)
       :up (load-prev-image state)
       :left (update-in state [:debug-offset] dec)
@@ -135,6 +136,7 @@
             :left 0
             :top 0
             :query ""
+            :file-query ""
             :show-cards false
             :query-filter true
             :debug (atom nil)
@@ -142,6 +144,12 @@
             :debug-avail (atom [])
             :debug-selected (atom [])
             :pid (re-find #"\d+" (.getName (ManagementFactory/getRuntimeMXBean)))})))
+
+(defn filter-query [query coll]
+  (let [query (.toLowerCase query)]
+    (if (empty? query)
+      coll
+      (filter #(.contains (.toLowerCase %) query) coll))))
 
 (defn debug [state text f]
   (let [query (.toLowerCase (:query state))
@@ -195,7 +203,7 @@
   (q/fill 0 0 0 192)
   (q/rect 0 0 300 60)
   (q/fill 255)
-  (q/text (str (select-keys state [:left :top :zoom :query :show-cards :query-filter :debug-offset])) 15 15)
+  (q/text (str (select-keys state [:left :top :zoom :query :show-cards :query-filter :debug-offset :file-query])) 15 15)
   (q/text (str (round (q/current-frame-rate)) "/" (q/target-frame-rate)) 15 45)
 
   (doseq [[i line] (enumerate (deref (:debug-avail state)))
@@ -205,7 +213,7 @@
       (q/fill 255))
     (q/text line 15 (+ 60 (* i 15))))
 
-  (doseq [[line i] (map vector (:file-list state) (range))
+  (doseq [[i line] (enumerate (filter-query (:file-query state) (:file-list state)))
           :let [visible (= line (:image-file state))]]
     (q/fill 0 0 0 192)
     (q/rect (- width 100) (* i 15) 100 15)
@@ -233,8 +241,8 @@
                   (:left state))
                (- (* (:zoom state) (-> c :bb .tl .y))
                   (:top state))
-               (* (.width card-img) 0.25)
-               (* (.height card-img) 0.25)
+               (* (.width card-img) 0.50 (:zoom state))
+               (* (.height card-img) 0.50 (:zoom state))
                )
       (q/text (str (select-keys c [:count :fill :color :shape]))
               (- (* (:zoom state) (-> c :bb .tl .x))
