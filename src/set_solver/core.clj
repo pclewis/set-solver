@@ -97,7 +97,179 @@
 (defn should-rotate? [pts img]
   (> (get-perspective-ratio pts img) 1.2))
 
+
+;; doesn't work good at all
+(defn diamond-like?
+  "Look for diamond-like points: a left-most or right-most point at a 45 degree angle or
+  a top-most or bottom-most point at a 135 degree angle."
+  [pts]
+  (let [pts (mat-seq pts)
+        [left-most right-most] ((juxt first last) (sort-by #(.x %) pts))
+        [top-most bottom-most] ((juxt first last) (sort-by #(.y %) pts))
+        angles (into {left-most 45 right-most 45}
+                     {top-most 135 bottom-most 135})
+        combos (filter #((set [left-most right-most top-most bottom-most]) (second %))
+                       (connected-combinations pts 3))]
+    (some #(close-enough? (apply angle-3p %)
+                          (Math/toRadians (get angles (second %)))
+                          0.01
+                          )
+          combos)))
+
+
+(defn overlapping-y
+  [r1 r2]
+  (or (< (.y (.tl r1)) (.y (.tl r2)) (.y (.br r1)))
+      (< (.y (.tl r1)) (.y (.br r2)) (.y (.br r1)))
+      (< (.y (.tl r2)) (.y (.br r1)) (.y (.br r2)))
+      (< (.y (.tl r2)) (.y (.br r1)) (.y (.br r2)))))
+
+(defn any-overlapping-y
+  [r1 rs]
+  (some (partial overlapping-y r1) rs))
+
+;; TODO:
+;; This is probably unreliable because if we see two pieces that don't overlap before
+;; the piece that would join them, they'll be in separate groups.
+;; Processing from tallest to shortest seems to work but is probably flawed.
+(defn group-contours
+  [contours]
+  (let [contours-with-bb (map #(vector % (Imgproc/boundingRect %)) contours)
+        contours-with-bb (reverse (sort-by #(.height (second %)) contours-with-bb))
+        groups (reduce
+                (fn [buckets [c bb]]
+                  (if-let [target (some #(when (any-overlapping-y bb (map second %)) %)
+                                        buckets)]
+                    (conj (remove #{target} buckets)
+                          (conj target [c bb]))
+                    (conj buckets [[c bb]])))
+                []
+                contours-with-bb)]
+    (map #(map first %) groups)))
+
+(defn near-edge?
+  [width height min-dist contour]
+  (let [bb (Imgproc/boundingRect contour)
+        pts [(-> bb .tl .x) (-> bb .br .x)
+             (-> bb .tl .y) (-> bb .br .y)]]
+    (or (some #(close-enough? % 0 min-dist) pts)
+        (some #(close-enough? % width min-dist) (take 2 pts))
+        (some #(close-enough? % height min-dist) (drop 2 pts)))))
+
+(defn hsv
+  [bgr-img]
+  (let [channels (java.util.LinkedList.)
+        hsv-img (Mat. (.size bgr-img) CvType/CV_8UC3)]
+     (Imgproc/cvtColor bgr-img hsv-img Imgproc/COLOR_BGR2HSV)
+     (Core/split hsv-img channels)
+     (vec channels)))
+
+;; FIXME: rgb? bgr? doesn't matter
+(defn- intensity
+  [rgb-img]
+  (let [channels (java.util.LinkedList.)]
+    (Core/split rgb-img channels)
+    (Core/divide (.get channels 0) (Scalar. 3 0 0) (.get channels 0))
+    (Core/divide (.get channels 1) (Scalar. 3 0 0) (.get channels 1))
+    (Core/divide (.get channels 2) (Scalar. 3 0 0) (.get channels 2))
+    (Core/add (.get channels 0) (.get channels 1) (.get channels 0))
+    (Core/add (.get channels 0) (.get channels 2) (.get channels 0))
+    (.release (.get channels 1))
+    (.release (.get channels 2))
+    (.get channels 0)))
+
+(defn merge-bb
+  ([b1] b1)
+  ([b1 b2 & bs] (apply merge-bb (merge-bb b1 b2) bs))
+  ([b1 b2]
+   (let [tl (Point. (min (-> b1 .tl .x) (-> b2 .tl .x))
+                    (min (-> b1 .tl .y) (-> b2 .tl .y)))
+         br (Point. (max (-> b1 .br .x) (-> b2 .br .x))
+                    (max (-> b1 .br .y) (-> b2 .br .y)))]
+     (Rect. tl br))))
+
+;; FIXME: add min-height, extend y in both directions
+(defn distance-to-corner
+  [contours min-left min-right]
+  (let [pts (flatten (map mat-seq contours))
+        bb (apply merge-bb (map #(Imgproc/boundingRect %) contours))
+        bl (Point. (min min-left (-> bb .tl .x)) (-> bb .br .y))
+        tr (Point. (max min-right (-> bb .br .x)) (-> bb .tl .y))
+        dists (map (juxt #(line-len bl %) #(line-len tr %)) pts)]
+    (round (apply min (flatten dists)))))
+
+(defn shape-by-distance [dist]
+  (condp > dist
+    14 :squiggle
+    19 :oval
+    :diamond))
+
 (defn identify-card
+  [img contour]
+  (let [target (Mat/zeros 350 225 CvType/CV_8UC3)
+        target-points (MatOfPoint2f.)
+        tright (-> target .cols dec)
+        tbottom (-> target .rows dec)
+        br (Imgproc/boundingRect contour)
+        rot (if (should-rotate? (.toList contour) img)
+              #(concat (rest %) (take 1 %))
+              identity)
+        _ (.fromList target-points (rot (map #(Point. %1 %2)
+                                             [tright 0 0       tright]
+                                             [0      0 tbottom tbottom])))
+        c2f (MatOfPoint2f.)
+        _ (.convertTo contour c2f CvType/CV_32FC2)
+        trans-mat (Imgproc/getPerspectiveTransform c2f target-points)
+        _ (Imgproc/warpPerspective img target trans-mat (.size target))
+        [h s v] (hsv target)
+        i (intensity target)]
+        ;; TODO
+        ;; if no shapes detected: try canny with 20 30 or something
+        ;; group contours by y span to count
+        ;; if pointy, diamond
+        ;; if not convex (only on y-axis?), squiggle
+        ;; else, oval
+        ;; use median focal length for should-rotate?
+    (Core/bitwise_not s s)
+    (Core/divide s (Scalar. 2 0 0) s)
+    (Core/divide v (Scalar. 2 0 0) v)
+    (Core/add s v s)
+    (Imgproc/Canny s s 20 100)
+    (Imgproc/dilate s s (Mat.))
+    (Imgproc/cvtColor s target Imgproc/COLOR_GRAY2BGR)
+    (let [card-contours (java.util.LinkedList.)
+          _ (Imgproc/findContours s card-contours (MatOfInt4.)
+                            Imgproc/RETR_EXTERNAL
+                            Imgproc/CHAIN_APPROX_SIMPLE)
+          card-contours (->> card-contours
+                             (filter #(> (Imgproc/contourArea %) 10))
+                             (remove #(near-edge? 225 350 10 %)))]
+      (comment
+        (.setTo s (Scalar. 0 0 0))
+        (Imgproc/drawContours s card-contours -1 (Scalar. 128 0 0) 1)
+        (doseq [c card-contours
+                :let [bb (Imgproc/boundingRect c) ]]
+          (Imgproc/rectangle s (.tl bb) (.br bb) (Scalar. 255 0 0) 1)))
+      (comment
+        (doseq [c card-contours
+                :let [ss (simplify-shape c)
+                      color (cond (diamond-like? ss)           (Scalar. 255 0 0)
+                                  (Imgproc/isContourConvex ss) (Scalar. 128 0 0)
+                                  :else                        (Scalar. 64 0 0))]
+                ]
+          (Imgproc/drawContours s (list ss) 0 color 1)))
+      ;(Imgproc/cvtColor s target Imgproc/COLOR_GRAY2BGR)
+      (let [groups (group-contours card-contours)]
+        {:count (count groups)
+         :shape (when (not-empty groups)
+                  (shape-by-distance (average (map #(distance-to-corner % 60 290) groups))))
+         :color :FIXME
+         :fill :FIXME
+         :contour :FIXME
+         :bb br
+         :image target}))))
+
+(defn old-identify-card
   [img contour]
   (let [target (Mat/zeros 600 300 CvType/CV_8UC3)
         target-points (MatOfPoint2f.)
@@ -432,23 +604,14 @@
                             Core/FONT_HERSHEY_COMPLEX 1 (Scalar. 255 0 0)))))
       contours)))
 
-(defn- intensity
-  [rgb-img]
-  (let [channels (java.util.LinkedList.)]
-    (Core/split rgb-img channels)
-    (Core/divide (.get channels 0) (Scalar. 3 0 0) (.get channels 0))
-    (Core/divide (.get channels 1) (Scalar. 3 0 0) (.get channels 1))
-    (Core/divide (.get channels 2) (Scalar. 3 0 0) (.get channels 2))
-    (Core/add (.get channels 0) (.get channels 1) (.get channels 0))
-    (Core/add (.get channels 0) (.get channels 2) (.get channels 0))
-    (.release (.get channels 1))
-    (.release (.get channels 2))
-    (.get channels 0)))
-
 (defn find-cards-intensity
   [img debug-fn]
   (let [img-i (intensity img)
+        [h s v] (hsv img)
         work (Mat. (.size img) CvType/CV_8U)]
+    (debug-fn "hue" (constantly h))
+    (debug-fn "saturation" (constantly s))
+    (debug-fn "value" (constantly v))
     (debug-fn "intensity" (constantly img-i))
     (debug-fn "intensity canny"
               (fn [canvas]

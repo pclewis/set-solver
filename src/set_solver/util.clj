@@ -233,3 +233,7 @@
     (if (odd? cnt)
       (nth ns mid)
       (/ (+ (nth ns mid) (nth ns (dec mid))) 2))))
+
+(defn average [ns]
+  (when (not-empty ns)
+    (/ (apply + ns) (count ns))))
