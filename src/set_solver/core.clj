@@ -180,21 +180,11 @@
     (.release (.get channels 2))
     (.get channels 0)))
 
-(defn merge-bb
-  ([b1] b1)
-  ([b1 b2 & bs] (apply merge-bb (merge-bb b1 b2) bs))
-  ([b1 b2]
-   (let [tl (Point. (min (-> b1 .tl .x) (-> b2 .tl .x))
-                    (min (-> b1 .tl .y) (-> b2 .tl .y)))
-         br (Point. (max (-> b1 .br .x) (-> b2 .br .x))
-                    (max (-> b1 .br .y) (-> b2 .br .y)))]
-     (Rect. tl br))))
-
 ;; FIXME: add min-height, extend y in both directions
 (defn distance-to-corner
   [contours min-left min-right]
   (let [pts (flatten (map mat-seq contours))
-        bb (apply merge-bb (map #(Imgproc/boundingRect %) contours))
+        bb (apply merge-rects (map #(Imgproc/boundingRect %) contours))
         bl (Point. (min min-left (-> bb .tl .x)) (-> bb .br .y))
         tr (Point. (max min-right (-> bb .br .x)) (-> bb .tl .y))
         dists (map (juxt #(line-len bl %) #(line-len tr %)) pts)]
@@ -220,6 +210,12 @@
                  dx (Math/cos a2c)
                  dy (- (Math/sin a2c))]]
        (point-add pt (Point. (* dx dist) (* dy dist)))))))
+
+(defn shrink-all-contours
+  [contours dist]
+  (let [bbs (map #(Imgproc/boundingRect %) contours)
+        center (apply rect-center-point bbs)]
+    (map #(shrink-contour % center dist) contours)))
 
 (defn identify-card
   [img contour]
@@ -247,6 +243,7 @@
         ;; if not convex (only on y-axis?), squiggle
         ;; else, oval
         ;; use median focal length for should-rotate?
+        ;; clean this code up jesus
     (Core/bitwise_not s s)
     (Core/divide s (Scalar. 2 0 0) s)
     (Core/divide v (Scalar. 2 0 0) v)
@@ -281,12 +278,35 @@
                 ]
           (Imgproc/drawContours s (list ss) 0 color 1)))
       ;(Imgproc/cvtColor s target Imgproc/COLOR_GRAY2BGR)
-      (let [groups (group-contours card-contours)]
+      (let [edge-mean (Core/mean target mask)
+            groups (group-contours card-contours)
+            inside-contours (flatten (map #(shrink-all-contours % 20) groups))
+            outside-contours (flatten (map #(shrink-all-contours % -10) groups))
+            _ (do (.setTo mask (Scalar. 0 0 0))
+                  (Imgproc/drawContours mask inside-contours -1 (Scalar. 255 255 255) 2))
+            #_(Imgproc/cvtColor mask target Imgproc/COLOR_GRAY2BGR)
+            inside-mean (Core/mean target mask)
+            _ (do (.setTo mask (Scalar. 0 0 0))
+                  (Imgproc/drawContours mask outside-contours -1 (Scalar. 255 255 255) 2))
+            outside-mean (Core/mean target mask)
+            [edge-h edge-s edge-l] (scalar-to-hsl edge-mean)
+            [inside-h inside-s inside-l] (scalar-to-hsl inside-mean)
+            [outside-h outside-s outside-l] (scalar-to-hsl outside-mean)
+            fill (cond (and (< inside-l edge-l)
+                            (close-enough? inside-h edge-h 15))
+                       :filled
+                       (and (close-enough? inside-l outside-l 5)
+                            (close-enough? inside-h outside-h 30)
+                            (close-enough? inside-s outside-s 10))
+                       :empty
+                       :else :shaded) ]
+
         {:count (count groups)
          :shape (when (not-empty groups)
                   (shape-by-distance (average (map #(distance-to-corner % 40 310) groups))))
-         :color (scalar-color-name (Core/mean target mask))
-         :fill :FIXME
+         :color (scalar-color-name edge-mean)
+         :fill fill
+         ;;[fill (map round [inside-h inside-s inside-l edge-h edge-s edge-l outside-h outside-s outside-l])]
          :bb br
          :image target}))))
 

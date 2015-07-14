@@ -2,7 +2,7 @@
   (:require [com.evocomputing.colors :as colors]
             [clojure.math.combinatorics :as combo]
             [set-solver.reusable-buffer :refer [reusable]])
-  (:import [org.opencv.core CvType Point Mat MatOfDouble MatOfPoint MatOfPoint2f]
+  (:import [org.opencv.core CvType Point Mat MatOfDouble MatOfPoint MatOfPoint2f Rect]
            [org.opencv.imgproc Imgproc] ) )
 
 (defn mat-seq
@@ -52,6 +52,20 @@
         [min-y max-y] (apply (juxt min max) ys)]
     (Point. (+ min-x (/ (- max-x min-x) 2))
             (+ min-y (/ (- max-y min-y) 2)))))
+
+(defn merge-rects
+  ([b1] b1)
+  ([b1 b2 & bs] (apply merge-rects (merge-rects b1 b2) bs))
+  ([b1 b2]
+   (let [tl (Point. (min (-> b1 .tl .x) (-> b2 .tl .x))
+                    (min (-> b1 .tl .y) (-> b2 .tl .y)))
+         br (Point. (max (-> b1 .br .x) (-> b2 .br .x))
+                    (max (-> b1 .br .y) (-> b2 .br .y)))]
+     (Rect. tl br))))
+
+(defn rect-center-point
+  ([rect] (center-point [(.tl rect) (.br rect)]))
+  ([rect & rects] (rect-center-point (apply merge-rects rect rects))))
 
 (defn rect-ratio
   "The ratio of a rectangle's smaller larger side."
