@@ -45,7 +45,8 @@
 (defn center-point
   "Return the center Point of a collection of points."
   [pts]
-  (let [xs (map #(.x %) pts)
+  (let [pts (mat-seq pts)
+        xs (map #(.x %) pts)
         ys (map #(.y %) pts)
         [min-x max-x] (apply (juxt min max) xs)
         [min-y max-y] (apply (juxt min max) ys)]
@@ -170,13 +171,15 @@
                            (- (.x center) (.x %)))
               pts)) )
 
+(defn angle-to-center
+  [center pt]
+  (Math/atan2 (- (.y pt) (.y center))
+              (- (.x center) (.x pt))))
+
 (defn shuffle-rectangle-points-angle
   [pts]
-
   (let [center (center-point pts)
-        pts-with-angle (map #(vector % (Math/atan2 (- (.y %) (.y center))
-                                                   (- (.x center) (.x %))))
-                            pts)
+        pts-with-angle (map #(vector % (angle-to-center center %)) pts)
         min-angle (apply min (map second pts-with-angle))]
     (->> (split-with #(not= (second %) min-angle) pts-with-angle)
          (reverse)

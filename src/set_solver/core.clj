@@ -56,13 +56,15 @@
 
 (defn color-name [hue sat]
   (cond (< 60 hue 180) :green
-        (< 25 hue 340) :purple
-        (< sat 25)     :purple
+        (< 13 hue 347) :purple
+        (< sat 20)     :purple
         :else          :red))
 
 (defn scalar-color-name [color]
   (let [[h s _] (scalar-to-hsl color)]
-    (color-name h s)))
+    ;(map round [h s])
+    (color-name h s)
+    ))
 
 (defn shape-name [contour]
   (condp < (first (contour-hu-invariants contour))
@@ -201,8 +203,23 @@
 (defn shape-by-distance [dist]
   (condp > dist
     14 :squiggle
-    19 :oval
+    22 :oval
     :diamond))
+
+(defn list->MatOfPoint
+  [pts]
+  (doto (MatOfPoint.)
+    (.fromList pts)))
+
+(defn shrink-contour
+  [contour center dist]
+  (list->MatOfPoint
+   (let [pts (mat-seq contour)]
+     (for [pt pts
+           :let [a2c (angle-to-center center pt)
+                 dx (Math/cos a2c)
+                 dy (- (Math/sin a2c))]]
+       (point-add pt (Point. (* dx dist) (* dy dist)))))))
 
 (defn identify-card
   [img contour]
@@ -236,20 +253,25 @@
     (Core/add s v s)
     (Imgproc/Canny s s 20 100)
     (Imgproc/dilate s s (Mat.))
-    (Imgproc/cvtColor s target Imgproc/COLOR_GRAY2BGR)
+    ;(Imgproc/cvtColor s target Imgproc/COLOR_GRAY2BGR)
     (let [card-contours (java.util.LinkedList.)
           _ (Imgproc/findContours s card-contours (MatOfInt4.)
                             Imgproc/RETR_EXTERNAL
                             Imgproc/CHAIN_APPROX_SIMPLE)
           card-contours (->> card-contours
-                             (filter #(> (Imgproc/contourArea %) 10))
-                             (remove #(near-edge? 225 350 10 %)))]
-      (comment
-        (.setTo s (Scalar. 0 0 0))
-        (Imgproc/drawContours s card-contours -1 (Scalar. 128 0 0) 1)
-        (doseq [c card-contours
-                :let [bb (Imgproc/boundingRect c) ]]
-          (Imgproc/rectangle s (.tl bb) (.br bb) (Scalar. 255 0 0) 1)))
+                             (filter #(> (Imgproc/contourArea %) 20))
+                             (remove #(near-edge? 225 350 10 %)))
+          mask (Mat/zeros (.size s) CvType/CV_8U)]
+      (.setTo s (Scalar. 0 0 0))
+      (Imgproc/drawContours s card-contours -1 (Scalar. 128 0 0) 1)
+      (doseq [c card-contours
+              :let [bb (Imgproc/boundingRect c) ]]
+        (Imgproc/rectangle s (.tl bb) (.br bb) (Scalar. 255 0 0) 1))
+      ;; TODO: should center be center of all contours?
+      (Imgproc/drawContours mask (map #(shrink-contour % (center-point %) 3)
+                                      card-contours) -1 (Scalar. 255 0 0) 2)
+      (comment (Imgproc/drawContours target (map #(shrink-contour % (center-point %) 3)
+                                                 card-contours) -1 (Scalar. 255 255 255) 2))
       (comment
         (doseq [c card-contours
                 :let [ss (simplify-shape c)
@@ -262,10 +284,9 @@
       (let [groups (group-contours card-contours)]
         {:count (count groups)
          :shape (when (not-empty groups)
-                  (shape-by-distance (average (map #(distance-to-corner % 60 290) groups))))
-         :color :FIXME
+                  (shape-by-distance (average (map #(distance-to-corner % 40 310) groups))))
+         :color (scalar-color-name (Core/mean target mask))
          :fill :FIXME
-         :contour :FIXME
          :bb br
          :image target}))))
 

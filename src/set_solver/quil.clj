@@ -102,6 +102,7 @@
     ;; not typing
     (case (:key e)
       :c (update-in state [:show-cards] not)
+      :i (update-in state [:show-card-info] not)
       :q (update-in state [:query-filter] not)
       :j (update-in state [:top] #(+ 15 %))
       :k (update-in state [:top] #(- % 15))
@@ -138,6 +139,7 @@
             :query ""
             :file-query ""
             :show-cards false
+            :show-card-info false
             :query-filter true
             :debug (atom nil)
             :debug-offset 0
@@ -242,16 +244,22 @@
                (- (* (:zoom state) (-> c :bb .tl .y))
                   (:top state))
                (* (.width card-img) 0.50 (:zoom state))
-               (* (.height card-img) 0.50 (:zoom state))
-               )
-      (q/text (str (select-keys c [:count :fill :color :shape]))
+               (* (.height card-img) 0.50 (:zoom state)))))
+
+  (when (:show-card-info state)
+    (doseq [c (:card-props state)]
+      (q/fill 0 0 0 192)
+      (q/rect (- (-> c :bb .tl .x) (:left state) 5)
+              (- (-> c :bb .tl .y) (:top state) 20)
+              120 75)
+      (q/fill 255)
+      (q/text (->> (select-keys c [:count :fill :color :shape])
+                   (map (juxt key val))
+                   (clojure.string/join "\n"))
               (- (* (:zoom state) (-> c :bb .tl .x))
                  (:left state))
               (- (* (:zoom state) (-> c :bb .tl .y))
-                 (:top state))
-              ))))
-
-
+                 (:top state))))))
 
 (q/defsketch hi
   :title "hi"
