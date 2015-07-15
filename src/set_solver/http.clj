@@ -9,7 +9,8 @@
             [ring.util.response :as r]
             [org.httpkit.server :as hk]
             [clojure.data.json :as json]
-            [set-solver.core :as solver])
+            [set-solver.core :as solver]
+            [set-solver.quil :refer [reasonable-size]])
   (:import [java.io ByteArrayInputStream]
            [org.opencv.core MatOfByte]
            [org.opencv.imgcodecs Imgcodecs]))
@@ -28,11 +29,13 @@
     v))
 
 (defn solve [params]
-  (let [img (Imgcodecs/imdecode (MatOfByte. (-> params :file :bytes)) Imgcodecs/CV_LOAD_IMAGE_COLOR)
-        cards (solver/find-cards img)
+  (let [img (reasonable-size (Imgcodecs/imdecode (MatOfByte. (-> params :file :bytes)) Imgcodecs/CV_LOAD_IMAGE_COLOR))
+        cards (solver/find-cards-intensity img (fn [& args]))
+        _ (clojure.pprint/pprint cards)
         cards (map #(solver/identify-card img %) cards)
         cards (map #(assoc %1 :id %2) cards (range))
-        resp {:cards (map #(select-keys % [:id :color :shape :count :fill :bb :debug]) cards)
+        resp {:size {:width (.width img) :height (.height img)}
+              :cards (map #(select-keys % [:id :color :shape :count :fill :bb :debug]) cards)
               :sets (map (fn [s] (map #(select-keys % [:id]) s))
                          (solver/find-sets cards))}]
     (-> (r/response (json/write-str resp :value-fn mapify-bb))

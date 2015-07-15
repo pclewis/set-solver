@@ -69,6 +69,12 @@
         (assoc state :image (reasonable-size (Imgcodecs/imread (:image-file state))))
         (assoc state :debug-canvas (Mat/zeros (.size (:image state)) CvType/CV_8U))))
 
+(defn filter-query [query coll]
+  (let [query (.toLowerCase query)]
+    (if (empty? query)
+      coll
+      (filter #(.contains (.toLowerCase %) query) coll))))
+
 (defn load-next-image [state]
   (load-image state
               (let [next-file (->> (filter-query (:file-query state) (:file-list state))
@@ -147,11 +153,7 @@
             :debug-selected (atom [])
             :pid (re-find #"\d+" (.getName (ManagementFactory/getRuntimeMXBean)))})))
 
-(defn filter-query [query coll]
-  (let [query (.toLowerCase query)]
-    (if (empty? query)
-      coll
-      (filter #(.contains (.toLowerCase %) query) coll))))
+
 
 (defn debug [state text f]
   (let [query (.toLowerCase (:query state))
@@ -253,7 +255,7 @@
                  (:left state) 5)
               (- (* (:zoom state) (-> c :bb .tl .y))
                  (:top state) 20)
-              270 75)
+              120 75)
       (q/fill 255)
       (q/text (->> (select-keys c [:count :fill :color :shape])
                    (map (juxt key val))

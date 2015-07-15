@@ -3,7 +3,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.4/jquery.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/raphael/2.1.4/raphael-min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tinycolor/1.1.2/tinycolor.min.js"></script>
-  <script src="lib/webcam.min.js"></script>
 </head>
 <body>
   <input id="file" type="file" name="file" />
@@ -17,8 +16,8 @@
       var result = $('#result'), preview = $('#preview');
       if (paper) paper.remove();
       paper = Raphael( result[0], 800, 600);
-      paper.setViewBox(0,0, preview.width() , preview.height(),true);
-      paper.image( preview.attr('src'), 0, 0, preview.width(), preview.height() );
+      paper.image( preview.attr('src'), 0, 0, data.size.width, data.size.height);
+      paper.setViewBox(0,0, data.size.width, data.size.height,true);
       var cardmap = {};
       data.cards.forEach( function(card) {
         console.log(card);
