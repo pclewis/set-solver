@@ -123,6 +123,12 @@
                 (- (* x3 y4) (* y3 x4))))
           d)])))
 
+(defn intersect-lines-pts
+  [pt1 pt2 pt3 pt4]
+  (let [[ix iy] (intersect-lines [(.x pt1) (.y pt1) (.x pt2) (.y pt2)]
+                                 [(.x pt3) (.y pt3) (.x pt4) (.y pt4)])]
+    (when (and ix iy) (Point. ix iy))))
+
 (defn find-corners
   "Find all points where given set of lines would intersect."
   [lines]
@@ -221,12 +227,17 @@
     (.release c2f)
     approx))
 
+;; FIXME: "right-ish"
+(defn right-angle?
+  ([angle] (right-angle? angle (/ Math/PI 8)))
+  ([angle margin-of-error] (close-enough? angle (/ Math/PI 2) margin-of-error)))
+
 (defn pts-rectangle?
   [pts]
   (let [pts (sort-rectangle-points-angle (mat-seq pts))
         [angle1 angle2 angle3 angle4 :as angles]
         (map #(apply angle-3p %) (connected-combinations pts 3))]
-    (and (every? #(close-enough? % (/ Math/PI 2) (/ Math/PI 8)) angles)
+    (and (every? right-angle? angles)
          (close-enough? angle1 angle3 0.2)
          (close-enough? angle2 angle4 0.2)
          (close-enough? (+ angle1 angle2) (Math/PI) 0.1))) )

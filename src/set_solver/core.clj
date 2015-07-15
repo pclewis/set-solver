@@ -510,15 +510,14 @@
    "rectangles"
    (fn [canvas]
      (doseq [contour contours]
-       (let [approx (simplify-shape contour)
-             color (case (round (Math/abs (- 4 (.rows approx))))
+       (let [color (case (round (Math/abs (- 4 (.rows contour))))
                      0 (Scalar. 255 0 0)
                      1 (Scalar. 192 0 0)
                      2 (Scalar. 128 0 0)
-                     (Scalar. 32 0 0))]
-         (Imgproc/drawContours canvas (list approx) 0 color)
-         (when (= 4 (.rows approx))
-           (let [pts (shuffle-rectangle-points-angle (.toList approx))
+                     (Scalar. 64 0 0))]
+         (Imgproc/drawContours canvas (list contour) 0 color)
+         (when (= 4 (.rows contour))
+           (let [pts (shuffle-rectangle-points-angle (mat-seq contour))
                  center (center-point pts)
                  angle1 (apply angle-3p (take 3 pts))
                  angle2 (apply angle-3p (take-last 3 pts))
@@ -587,25 +586,36 @@
            (map pts->contour)
            (distinct-contours)))))
 
+(defn rectanglify-1
+  "Find 4 connected points along a contour that are rectangly"
+  [pts]
+  (->> (connected-combinations pts 4)
+       (filter pts-rectangle?)))
+
+(defn connect-ends
+  "Replace A and E with the point where AB and DE meet."
+  [[a b c d e]]
+  [b c d (intersect-lines-pts a b d e)])
+
+(defn rectanglify-2
+  "Find 5 connected points, ABCDE, where ABC is a right-ish angle, BCD is a right-ish angle,
+  and CDE is a right-ish angle, but AB is longer/shorter than CD. Replace A and E with the point
+  where AB and DE meet"
+  [pts]
+  (->> (connected-combinations pts 5)
+       (filter (comp right-angle? (partial apply angle-3p) (partial take 3) (partial drop 0))) ;; ABC is right-ish
+       (filter (comp right-angle? (partial apply angle-3p) (partial take 3) (partial drop 1))) ;; BCD is right-ish
+       (filter (comp right-angle? (partial apply angle-3p) (partial take 3) (partial drop 2))) ;; CDE is right-ish
+       (map connect-ends)
+       (filter pts-rectangle?)))
+
 (defn rectanglify
   [contour debug-fn]
-  (let [c2f (MatOfPoint2f.)
-        approx2f (MatOfPoint2f.)
-        approx (MatOfPoint.)
-        _ (.convertTo contour c2f CvType/CV_32FC2)
-        _ (Imgproc/approxPolyDP c2f approx2f
-                                (* 0.02 (Imgproc/arcLength c2f true))
-                                true)
-        _ (.convertTo approx2f approx CvType/CV_32S)
-        ]
-    (when (< 4 (.rows approx2f) 8)
-      (let [pts (sort-rectangle-points-angle (.toList approx2f))]
-        (when-let [new-contour (->> (connected-combinations pts 4)
-                                    ;(debug-rectanglify debug-fn)
-                                    (filter pts-rectangle?)
-                                    (first))]
-          (.fromList approx2f new-contour)
-          (.convertTo approx2f contour CvType/CV_32S))))
+  (if (< 4 (.rows contour) 8)
+    (let [pts (mat-seq contour)]
+      (when-let [new-contours (concat (rectanglify-1 pts)
+                                      (rectanglify-2 pts))]
+        (map list->MatOfPoint new-contours)))
     contour))
 
 (defn- find-cards
@@ -627,6 +637,7 @@
                ;(filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
                (map simplify-shape)
                (map #(rectanglify % debug-fn))
+               (flatten)
                (debug-rect img debug-fn)
                (filter rectangle?))
 
@@ -652,6 +663,11 @@
         work (Mat. (.size img) CvType/CV_8U)]
     (debug-fn "hue" (constantly h))
     (debug-fn "saturation" (constantly s))
+    (debug-fn "saturation otsu" (fn [canvas]
+                                  (Imgproc/threshold s canvas 64 255 Imgproc/THRESH_BINARY
+                                                     )))
+    (debug-fn "saturation canny" (fn [canvas]
+                                  (Imgproc/Canny s canvas 100 200)))
     (debug-fn "value" (constantly v))
     (debug-fn "intensity" (constantly img-i))
     (debug-fn "intensity canny"
@@ -685,17 +701,64 @@
       (debug-fn "FINAL Contours" #(Imgproc/drawContours % result -1 (Scalar. 255 0 0) 1))
       result)))
 
+
+(defn find-cards-corners
+  [img debug-fn]
+  (let [i (intensity img)
+        corners (MatOfPoint.)]
+    (Imgproc/goodFeaturesToTrack i corners 255 0.1 20 (Mat.) 5 false 0.04)
+    (debug-fn "corners"
+              (fn [canvas]
+                (.copyTo i canvas)
+                (doseq [pt (mat-seq corners)]
+                  (Imgproc/circle canvas pt 3 (Scalar. 255 0 0) 1))))
+    (->> (combo/combinations (mat-seq corners) 4)
+         (filter pts-rectangle?)
+         (map list->MatOfPoint)
+         (take 20)
+         (filter #(correct-aspect-ratio? img % nil))
+         (debug-rect img debug-fn))))
+
 (defn find-cards-experimenting
   [img debug-fn]
   (let [img-hsl (Mat. (.size img) CvType/CV_8UC3)
-        channels (java.util.LinkedList.)]
+        channels (java.util.LinkedList.)
+        corners (MatOfPoint.)]
     (Imgproc/cvtColor img img-hsl Imgproc/COLOR_RGB2HSV)
     (Core/split img-hsl channels)
     (let [[h s l] (vec channels)
           not-s (Mat.)
           s-thresh (Mat.)
           i (intensity img)]
-      (Core/bitwise_not s not-s)
+      (comment
+        (Imgproc/cornerHarris i corners 2 3 0.04)
+                                        ;(Core/normalize corners cornersi 0 255 Core/NORM_MINMAX CvType/CV_8U)
+                                        ;(.convertTo corners cornersi CvType/CV_8U)
+        (debug-fn "corners"
+                  (fn [canvas]
+                    (.copyTo i canvas)
+                    (doseq [x (range (.width i))
+                            y (range (.height i))]
+                      (if (> (first (.get corners y x)) 10e-06)
+                        (Imgproc/circle canvas (Point. x y) 3 (Scalar. 255 0 0) 1))))))
+      (Imgproc/goodFeaturesToTrack i corners 255 0.1 20 (Mat.) 5 false 0.04)
+        (debug-fn "corners"
+                  (fn [canvas]
+                    (.copyTo i canvas)
+                    (doseq [pt (mat-seq corners)]
+                      (Imgproc/circle canvas pt 3 (Scalar. 255 0 0) 1))))
+
+        (Core/bitwise_not s not-s)
+        (comment
+          (Imgproc/goodFeaturesToTrack s corners 255 0.01 10 (Mat.) 3 false 0.1)
+          (debug-fn "corners-saturation"
+                    (fn [canvas]
+                      (.copyTo not-s canvas)
+                      (doseq [pt (mat-seq corners)]
+                        (Imgproc/circle canvas pt 3 (Scalar. 255 0 0) 1)))))
+
+
+
       (debug-fn "hue" (constantly h))
       (debug-fn "lightness" (constantly l))
       (debug-fn "saturation" (constantly s))
