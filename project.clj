@@ -19,6 +19,7 @@
                  [net.mikera/vectorz-clj "0.30.1"]
                  ;; required for ring.middleware.multipart-params, normally included with ex jetty
                  [javax.servlet/servlet-api "2.5"]
-                 [org.clojure/data.json "0.2.6"]]
+                 [org.clojure/data.json "0.2.6"]
+                 [prismatic/plumbing "0.4.4"]]
 
   :injections [(clojure.lang.RT/loadLibrary org.opencv.core.Core/NATIVE_LIBRARY_NAME)])

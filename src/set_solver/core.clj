@@ -280,24 +280,27 @@
       ;(Imgproc/cvtColor s target Imgproc/COLOR_GRAY2BGR)
       (let [edge-mean (Core/mean target mask)
             groups (group-contours card-contours)
-            inside-contours (flatten (map #(shrink-all-contours % 20) groups))
             outside-contours (flatten (map #(shrink-all-contours % -10) groups))
             _ (do (.setTo mask (Scalar. 0 0 0))
-                  (Imgproc/drawContours mask inside-contours -1 (Scalar. 255 255 255) 2))
-            #_(Imgproc/cvtColor mask target Imgproc/COLOR_GRAY2BGR)
+                  (doseq [cs groups
+                          :let [center (center-point (flatten (map mat-seq cs)))]]
+                    (Imgproc/circle mask center                           10 (Scalar. 255 0 0) -1)
+                    (Imgproc/circle mask (point-add center (Point. 35 0)) 10 (Scalar. 255 0 0) -1)
+                    (Imgproc/circle mask (point-sub center (Point. 35 0)) 10 (Scalar. 255 0 0) -1)))
             inside-mean (Core/mean target mask)
             _ (do (.setTo mask (Scalar. 0 0 0))
-                  (Imgproc/drawContours mask outside-contours -1 (Scalar. 255 255 255) 2))
+                  (Imgproc/drawContours mask outside-contours -1 (Scalar. 255 255 255) 3))
+            #_(Imgproc/cvtColor mask target Imgproc/COLOR_GRAY2BGR)
             outside-mean (Core/mean target mask)
             [edge-h edge-s edge-l] (scalar-to-hsl edge-mean)
             [inside-h inside-s inside-l] (scalar-to-hsl inside-mean)
             [outside-h outside-s outside-l] (scalar-to-hsl outside-mean)
-            fill (cond (and (< inside-l edge-l)
+            fill (cond (and (<= inside-l (inc edge-l))
                             (close-enough? inside-h edge-h 15))
                        :filled
-                       (and (close-enough? inside-l outside-l 5)
-                            (close-enough? inside-h outside-h 30)
-                            (close-enough? inside-s outside-s 10))
+                       (and (close-enough? inside-l outside-l 4)
+                            (close-enough? inside-h outside-h 15)
+                            (close-enough? inside-s outside-s 4))
                        :empty
                        :else :shaded) ]
 
@@ -305,8 +308,9 @@
          :shape (when (not-empty groups)
                   (shape-by-distance (average (map #(distance-to-corner % 40 310) groups))))
          :color (scalar-color-name edge-mean)
-         :fill fill
-         ;;[fill (map round [inside-h inside-s inside-l edge-h edge-s edge-l outside-h outside-s outside-l])]
+         ;;:fill fill
+         :fill [fill (map round [inside-h inside-s inside-l edge-h edge-s edge-l outside-h outside-s outside-l])]
+         ;;:fill [fill (map round (flatten (map #(seq (.val %)) [inside-mean edge-mean outside-mean])))]
          :bb br
          :image target}))))
 
@@ -609,13 +613,32 @@
        (map connect-ends)
        (filter pts-rectangle?)))
 
+(defn add-4th-point
+  [[a b c]]
+  (let [ab (point-sub a b)
+        d (point-add c ab)]
+    [a b c d]))
+
+(add-4th-point [(Point. 2 -1) (Point. 4 3) (Point. 2 4)])
+
+(defn rectanglify-3
+  "Find 3 connected points, ABC, where ABC is a right-ish angle.
+   Make another point D such that AB=CD and AD=BC. "
+  [pts]
+  (->> (connected-combinations pts 3)
+       (filter (comp right-angle? (partial apply angle-3p))) ;; ABC is right-ish
+       (map add-4th-point)
+       (filter pts-rectangle?)))
+
 (defn rectanglify
   [contour debug-fn]
-  (if (< 4 (.rows contour) 8)
+  (if (< 3 (.rows contour) 8)
     (let [pts (mat-seq contour)]
       (when-let [new-contours (concat (rectanglify-1 pts)
-                                      (rectanglify-2 pts))]
-        (map list->MatOfPoint new-contours)))
+                                      (rectanglify-2 pts)
+                                      ;(rectanglify-3 pts)
+                               )]
+        (conj (map list->MatOfPoint new-contours) contour)))
     contour))
 
 (defn- find-cards
@@ -633,15 +656,17 @@
                (filter #(< (* (.total img) 0.01)
                            (Math/abs (Imgproc/contourArea %))
                            (* (.total img) 0.5)))
-               (filter #(> 500 (.rows %)))
+               ;(filter #(> 500 (.rows %)))
                ;(filter #(> 0.5 (match-shapes-i1 card-shape (contour-hu-invariants %))))
+               (debug-rect img #(debug-fn (str "pre-" %1) %2))
                (map simplify-shape)
                (map #(rectanglify % debug-fn))
                (flatten)
                (debug-rect img debug-fn)
                (filter rectangle?))
 
-          focal-length (when (not-empty contours) (median (map #(efl % img) contours)))
+          focal-length (let [efls (keep #(efl % img) contours)]
+                         (when (not-empty efls) (median efls)))
 
           contours (->> contours
                         (filter #(correct-aspect-ratio? img % focal-length))
@@ -672,12 +697,14 @@
     (debug-fn "intensity" (constantly img-i))
     (debug-fn "intensity canny"
               (fn [canvas]
-                (Imgproc/Canny (.clone img-i) canvas 40 200)))
+                (Imgproc/Canny (.clone img-i) canvas 20 200)
+                (Imgproc/dilate canvas canvas (Mat.))))
 
     (debug-fn "canny lines"
               (fn [canvas]
                 (let [lines (MatOfInt4.)]
-                  (Imgproc/Canny (.clone img-i) canvas 40 200)
+                  (Imgproc/Canny (.clone img-i) canvas 20 200)
+                  (Imgproc/dilate canvas canvas (Mat.))
                   (Imgproc/HoughLinesP canvas lines 1 (/ Math/PI 90) 10 20 15)
                   (.setTo canvas (Scalar. 0 0 0))
                   (doseq [[l i] (map vector (partition 4 (.toList lines)) (range))
@@ -695,29 +722,98 @@
               (concat (do (Imgproc/Canny img-i work 40 200)
                           (find-cards work #(debug-fn (str "canny-" %1) %2))))
               (flatten)
-              (distinct-contours)
-              (remove-contained-rects)
-              )]
-      (debug-fn "FINAL Contours" #(Imgproc/drawContours % result -1 (Scalar. 255 0 0) 1))
+              (distinct-contours))
+          ;focal-length (let [efls (keep #(efl % img) result)] (when (not-empty efls) (median efls)))
+          ;ratio (when (not-empty result) (median (keep #(get-perspective-ratio % img focal-length) result)))
+          ;result (filter #(close-enough? ratio (get-perspective-ratio % img focal-length) 0.2) result)
+          result (remove-contained-rects result)
+          ]
+      (debug-fn "FINAL Contours"
+                (fn [canvas]
+                  (doseq [[i c] (enumerate result)]
+                    (Imgproc/drawContours canvas (list c) 0 (Scalar. (rand-int 255) 0 0) 1
+                                          ;8 (Mat.) 0 (Point. (* i i) (* i i))
+                                          ))))
+
       result)))
 
 
+
+;; find corners
+;; for each corner:
+;;   if corner not considered yet:
+;;     flood fill to create mask
+;;     if mask is too big or too small, continue
+;;     add all points inside mask to "considered" list
+;;     see if mask outline itself is card-shaped
+;;     see if any sets of 4 points are card shaped
+
+(defn get-pt [img pt]
+  (first (.get img (.y pt) (.x pt))))
+
 (defn find-cards-corners
   [img debug-fn]
-  (let [i (intensity img)
+  (let [img-i (intensity img)
         corners (MatOfPoint.)]
-    (Imgproc/goodFeaturesToTrack i corners 255 0.1 20 (Mat.) 5 false 0.04)
+    (Imgproc/goodFeaturesToTrack img-i corners 255 0.1 6 (Mat.) 10 false 0.04)
     (debug-fn "corners"
               (fn [canvas]
-                (.copyTo i canvas)
+                (.copyTo img-i canvas)
                 (doseq [pt (mat-seq corners)]
                   (Imgproc/circle canvas pt 3 (Scalar. 255 0 0) 1))))
-    (->> (combo/combinations (mat-seq corners) 4)
-         (filter pts-rectangle?)
-         (map list->MatOfPoint)
-         (take 20)
-         (filter #(correct-aspect-ratio? img % nil))
-         (debug-rect img debug-fn))))
+
+    (let [mask (Mat/zeros (+ 2 (.rows img))
+                          (+ 2 (.cols img))
+                          CvType/CV_8U)
+          submask (.submat mask (Rect. (Point. 1 1) (.size img)))]
+      (loop [remaining-corners (mat-seq corners)
+             skipped-corners []
+             result []
+             i 0]
+        (if-let [corner (first remaining-corners)]
+          (do
+            (.setTo mask (Scalar. 0 0 0))
+            (Imgproc/floodFill img mask corner (Scalar. 255 0 0)
+                               (Rect. (Point. 0 0) (.size img))
+                               (Scalar. 8 8 8) (Scalar. 8 8 8)
+                               (bit-or Imgproc/FLOODFILL_MASK_ONLY
+                                       (bit-shift-left 255 8)))
+            (Imgproc/dilate mask mask (Mat.))
+            (let [mean (first (.val (Core/mean mask)))]
+              (if (or (< mean 1)    ;; too small
+                      (> mean 128)) ;; too big
+                (recur (rest remaining-corners)
+                       (conj skipped-corners corner)
+                       result (inc i))
+                (let [contained-corners (remove
+                                         #(zero? (get-pt mask %))
+                                         #_(fn [pt] (let [r (Rect. (Point. (max 0 (- (.x pt) 5))
+                                                                        (max 0 (- (.y pt) 5)))
+                                                                (Size. 11 11))
+                                                       m (Core/mean (.submat mask r))]
+                                                   (zero? (first (.val m)))))
+                                         (concat skipped-corners remaining-corners))]
+                  (debug-fn (str "corner-mask-" i) (fn [canvas] (.copyTo submask canvas)))
+                  (debug-fn (str "contained-corners-" i)
+                            (fn [canvas]
+                              (.copyTo img-i canvas)
+                              (doseq [pt contained-corners]
+                                (Imgproc/circle canvas pt 3 (Scalar. 255 0 0) 1))))
+                  (recur (remove (set contained-corners) remaining-corners)
+                         (remove (set contained-corners) skipped-corners)
+                         (concat result (->> (combo/combinations contained-corners 4)
+                                             (map sort-rectangle-points-angle)
+                                             (filter pts-rectangle?)
+                                             (map list->MatOfPoint)
+                                             (debug-rect img #(debug-fn (str "corners-" i "-" %1 "-pre") %2))
+                                             ;; FIXME use median efl
+                                             (filter #(correct-aspect-ratio? img % nil))
+                                             (debug-rect img #(debug-fn (str "corners-" i "-" %1 "-post") %2))))
+                         (inc i))))))
+
+          (do  (debug-fn "FINAL Contours"
+                         #(Imgproc/drawContours % result -1 (Scalar. 255 0 0) 1))
+               result))))))
 
 (defn find-cards-experimenting
   [img debug-fn]

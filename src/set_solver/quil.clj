@@ -10,6 +10,7 @@
            [org.opencv.core Mat Size Rect Point CvType Scalar]
            [org.opencv.imgcodecs Imgcodecs]
            [org.opencv.imgproc Imgproc]
+           [org.opencv.videoio VideoCapture]
            [java.lang.management ManagementFactory]))
 
 
@@ -91,6 +92,16 @@
                                    (last))]
                 (or prev-file (last (:file-list state))))))
 
+(defn load-camera-image [state]
+  (as-> state state
+        (assoc state :camera (or (:camera state) (VideoCapture. 0)))
+        (assoc state :image-file "CAMERA")
+        (assoc state :image (reasonable-size (let [m (Mat.)]
+                                               (.read (:camera state) m)
+                                               m)))
+        (assoc state :debug-canvas (Mat/zeros (.size (:image state)) CvType/CV_8U)))
+  )
+
 (defn key-pressed [state e]
   (println e)
   (if-let [field (:typing state)]
@@ -114,6 +125,7 @@
       :k (update-in state [:top] #(- % 15))
       :l (update-in state [:left] #(+ 15 %))
       :h (update-in state [:left] #(- % 15))
+      :C (load-camera-image state)
       :+ (update-in state [:zoom] #(* % 2))
       :- (update-in state [:zoom] #(/ % 2))
       :/ (assoc state :typing :query :query "")
@@ -210,12 +222,17 @@
   (q/text (str (select-keys state [:left :top :zoom :query :show-cards :query-filter :debug-offset :file-query])) 15 15)
   (q/text (str (round (q/current-frame-rate)) "/" (q/target-frame-rate)) 15 45)
 
-  (doseq [[i line] (enumerate (deref (:debug-avail state)))
-          :let [visible (some #{line} (deref (:debug-selected state)))]]
-    (if visible
-      (q/fill 0 255 0)
-      (q/fill 255))
-    (q/text line 15 (+ 60 (* i 15))))
+  (let [debug-avail (deref (:debug-avail state))
+        debug-avail (if (> (count debug-avail) 47)
+                      (drop (max 0 (- (:debug-offset state) 15))
+                            debug-avail)
+                      debug-avail)]
+    (doseq [[i line] (enumerate debug-avail)
+            :let [visible (some #{line} (deref (:debug-selected state)))]]
+      (if visible
+        (q/fill 0 255 0)
+        (q/fill 255))
+      (q/text line 15 (+ 60 (* i 15)))))
 
   (doseq [[i line] (enumerate (filter-query (:file-query state) (:file-list state)))
           :let [visible (= line (:image-file state))]]

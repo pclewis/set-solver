@@ -178,11 +178,12 @@
         p23 (line-len p2x p2y p3x p3y)]
 
     ;; acos((p12^2 + p13^2) - (p23^2)) / (2 * p12 * p13)
-    (Math/acos
-     (/ (- (+ (* p12 p12)
-              (* p13 p13))
-           (* p23 p23))
-        (* 2 p12 p13)))))
+    (when-not (zero? (* p12 p13))
+      (Math/acos
+       (/ (- (+ (* p12 p12)
+                (* p13 p13))
+             (* p23 p23))
+          (* 2 p12 p13))))))
 
 (defn sort-rectangle-points-angle
   [pts]
@@ -237,10 +238,11 @@
   (let [pts (sort-rectangle-points-angle (mat-seq pts))
         [angle1 angle2 angle3 angle4 :as angles]
         (map #(apply angle-3p %) (connected-combinations pts 3))]
-    (and (every? right-angle? angles)
-         (close-enough? angle1 angle3 0.2)
-         (close-enough? angle2 angle4 0.2)
-         (close-enough? (+ angle1 angle2) (Math/PI) 0.1))) )
+    (when-not (some nil? [angle1 angle2 angle3 angle4])
+      (and (every? right-angle? angles)
+           (close-enough? angle1 angle3 0.2)
+           (close-enough? angle2 angle4 0.2)
+           (close-enough? (+ angle1 angle2) (Math/PI) 0.1)))) )
 
 (defn rectangle?
   "True if contour can be approximated by a polygon with 4 points that meet at more-or-less right angles."
