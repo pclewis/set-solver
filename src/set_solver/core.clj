@@ -74,10 +74,18 @@
 
 (defn find-sets [cards]
   (filter #(->> (map (juxt :shape :color :fill :count) %)
-                transpose
+                (transpose)
                 (map (comp count distinct))
                 (every? #{1 3}))
           (combo/combinations cards 3)))
+
+(defn card-str [card]
+  (.toUpperCase (str (:count card)
+                     (-> (:color card) name first)
+                     (if (= :shaded (:fill card))
+                       \h
+                       (-> (:fill card) name first))
+                     (-> (:shape card) name first))))
 
 (defn get-perspective-ratio
   ([pts img] (get-perspective-ratio pts img nil))
@@ -308,8 +316,8 @@
          :shape (when (not-empty groups)
                   (shape-by-distance (average (map #(distance-to-corner % 40 310) groups))))
          :color (scalar-color-name edge-mean)
-         ;;:fill fill
-         :fill [fill (map round [inside-h inside-s inside-l edge-h edge-s edge-l outside-h outside-s outside-l])]
+         :fill fill
+         ;;:fill [fill (map round [inside-h inside-s inside-l edge-h edge-s edge-l outside-h outside-s outside-l])]
          ;;:fill [fill (map round (flatten (map #(seq (.val %)) [inside-mean edge-mean outside-mean])))]
          :bb br
          :image target}))))

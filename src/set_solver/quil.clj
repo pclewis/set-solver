@@ -5,7 +5,8 @@
             [quil.core :as q]
             [quil.middleware :as m]
             [set-solver.core :refer :all]
-            [set-solver.util :refer [constrain enumerate]])
+            [set-solver.util :refer [constrain enumerate]]
+            [com.evocomputing.colors :as colors])
   (:import [java.nio ByteBuffer ByteOrder]
            [org.opencv.core Mat Size Rect Point CvType Scalar]
            [org.opencv.imgcodecs Imgcodecs]
@@ -119,6 +120,7 @@
     ;; not typing
     (case (:key e)
       :c (update-in state [:show-cards] not)
+      :s (update-in state [:show-card-sets] not)
       :i (update-in state [:show-card-info] not)
       :q (update-in state [:query-filter] not)
       :j (update-in state [:top] #(+ 15 %))
@@ -199,6 +201,16 @@
       (Integer/parseInt)
       (* 4096)))
 
+(defn add-sets
+  [cards sets]
+  (let [i-sets (enumerate sets)]
+    (map (fn [card]
+           (assoc card :in-sets
+                  (map (comp inc first)
+                       (filter (fn [[i s]] (.contains s card))
+                              i-sets))))
+         cards)))
+
 (defn update [state]
   (reset! (:debug-avail state) [])
   (reset! (:debug-selected state) [])
@@ -206,7 +218,9 @@
   (as-> state state
         (assoc state :cards (find-cards-intensity (:image state) (partial debug state)))
         (assoc state :card-props (map #(identify-card (:image state) %) (:cards state)))
-        (assoc state :rss (get-rss (:pid state)))))
+        (assoc state :rss (get-rss (:pid state)))
+        (assoc state :card-props (add-sets (:card-props state) (find-sets (:card-props state))))
+        (assoc state :sets (find-sets (:card-props state)))))
 
 (defn draw [state]
   (q/background 0)
@@ -220,6 +234,7 @@
   (q/rect 0 0 300 60)
   (q/fill 255)
   (q/text (str (select-keys state [:left :top :zoom :query :show-cards :query-filter :debug-offset :file-query])) 15 15)
+  (q/text (str (count (:sets state)) " sets") 15 30)
   (q/text (str (round (q/current-frame-rate)) "/" (q/target-frame-rate)) 15 45)
 
   (let [debug-avail (deref (:debug-avail state))
@@ -266,13 +281,14 @@
                (* (.height card-img) 0.50 (:zoom state)))))
 
   (when (:show-card-info state)
+    ;(clojure.pprint/pprint (:card-props2 state))
     (doseq [c (:card-props state)]
       (q/fill 0 0 0 192)
       (q/rect (- (* (:zoom state) (-> c :bb .tl .x))
                  (:left state) 5)
               (- (* (:zoom state) (-> c :bb .tl .y))
                  (:top state) 20)
-              120 75)
+              120 85)
       (q/fill 255)
       (q/text (->> (select-keys c [:count :fill :color :shape])
                    (map (juxt key val))
@@ -280,7 +296,31 @@
               (- (* (:zoom state) (-> c :bb .tl .x))
                  (:left state))
               (- (* (:zoom state) (-> c :bb .tl .y))
-                 (:top state))))))
+                 (:top state)))))
+
+  (when (:show-card-sets state)
+    (doseq [c (:card-props state)]
+      (q/fill 0 0 0 192)
+      (q/rect (- (* (:zoom state) (-> c :bb .tl .x))
+                 (:left state) 5)
+              (- (* (:zoom state) (-> c :bb .tl .y))
+                 (:top state)
+                 -67)
+              120 35)
+      (let [size (if (< (count (:sets state)) 6) 30 10)]
+        (q/text-size size)
+
+        (doseq [i (:in-sets c)]
+          (apply q/fill (colors/hsl-to-rgb (* i 30) 50 50))
+          (q/text (str i)
+                  (- (* (:zoom state) (-> c :bb .tl .x))
+                     (:left state)
+                     (* (dec i) (- size)))
+                  (- (* (:zoom state) (-> c :bb .tl .y))
+                     (:top state)
+                     -95)
+                  )))
+      (q/text-size 12))))
 
 (q/defsketch hi
   :title "hi"
