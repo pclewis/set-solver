@@ -2,15 +2,15 @@
   (:require [com.evocomputing.colors :as colors]
             [clojure.math.combinatorics :as combo]
             [set-solver.reusable-buffer :refer [reusable]])
-  (:import [org.opencv.core CvType Point Mat MatOfDouble MatOfPoint MatOfPoint2f Rect]
+  (:import [org.opencv.core CvType Point Mat MatOfDouble MatOfPoint MatOfPoint2f Rect Size Scalar]
            [org.opencv.imgproc Imgproc] ) )
 
 (defn mat-seq
   [coll]
   (seq
    (condp = (type coll)
-     org.opencv.core.MatOfPoint (.toList coll)
-     org.opencv.core.MatOfPoint2f (.toList coll)
+     org.opencv.core.MatOfPoint (.toList ^org.opencv.core.MatOfPoint coll)
+     org.opencv.core.MatOfPoint2f (.toList ^org.opencv.core.MatOfPoint2f coll)
      coll)))
 
 (defn constrain
@@ -32,31 +32,31 @@
 (defn close-enough?
   "Return true if the difference between n1 and n2 is less than max-diff."
   [n1 n2 max-diff]
-  (< (Math/abs (- n1 n2)) max-diff))
+  (< (Math/abs (float (- n1 n2))) max-diff))
 
 (defn line-len
   "Calculate length of line given two Points or 4 coordinates"
-  ([p1 p2] (line-len (.x p1) (.y p1) (.x p2) (.y p2)))
+  ([^Point p1 ^Point p2] (line-len (.x p1) (.y p1) (.x p2) (.y p2)))
   ([p1x p1y p2x p2y]
    (Math/sqrt
     (+ (Math/pow (- p1x p2x) 2)
        (Math/pow (- p1y p2y) 2)))))
 
-(defn center-point
+(defn ^Point center-point
   "Return the center Point of a collection of points."
   [pts]
   (let [pts (mat-seq pts)
-        xs (map #(.x %) pts)
-        ys (map #(.y %) pts)
+        xs (map #(.x ^Point %) pts)
+        ys (map #(.y ^Point %) pts)
         [min-x max-x] (apply (juxt min max) xs)
         [min-y max-y] (apply (juxt min max) ys)]
     (Point. (+ min-x (/ (- max-x min-x) 2))
             (+ min-y (/ (- max-y min-y) 2)))))
 
-(defn merge-rects
+(defn ^Rect merge-rects
   ([b1] b1)
   ([b1 b2 & bs] (apply merge-rects (merge-rects b1 b2) bs))
-  ([b1 b2]
+  ([^Rect b1 ^Rect b2]
    (let [tl (Point. (min (-> b1 .tl .x) (-> b2 .tl .x))
                     (min (-> b1 .tl .y) (-> b2 .tl .y)))
          br (Point. (max (-> b1 .br .x) (-> b2 .br .x))
@@ -64,24 +64,24 @@
      (Rect. tl br))))
 
 (defn rect-center-point
-  ([rect] (center-point [(.tl rect) (.br rect)]))
+  ([^Rect rect] (center-point [(.tl rect) (.br rect)]))
   ([rect & rects] (rect-center-point (apply merge-rects rect rects))))
 
 (defn rect-ratio
   "The ratio of a rectangle's smaller larger side."
-  ([size] (rect-ratio (.width size) (.height size)))
+  ([^Rect size] (rect-ratio (.width size) (.height size)))
   ([w h] (/ (max w h) (min w h))))
 
 (defn rect-contains?
   "True if r1 contains r2. Note rects do not 'contain' their own bottom right, so (rect-contains? r r) is false."
-  [r1 r2]
+  [^Rect r1 ^Rect r2]
   (and (.contains r1 (.tl r2))
        (.contains r1 (.br r2))))
 
 (defn rect-close-enough?
   "True if the top-left and bottom-right points of r1 and r2 differ by less than max-diff (default 10% of cross length)"
-  ([r1 r2] (rect-close-enough? r1 r2 (* 0.10 (line-len (.tl r1) (.br r1)))))
-  ([r1 r2 max-diff]
+  ([^Rect r1 ^Rect r2] (rect-close-enough? r1 r2 (* 0.10 (line-len (.tl r1) (.br r1)))))
+  ([^Rect r1 ^Rect r2 max-diff]
    (and (close-enough? (-> r1 .tl .x) (-> r2 .tl .x) max-diff)
         (close-enough? (-> r1 .tl .y) (-> r2 .tl .y) max-diff)
         (close-enough? (-> r1 .br .x) (-> r2 .br .x) max-diff)
@@ -89,7 +89,7 @@
 
 (defn scalar-to-hsl
   "Convert a scalar RGB color to HSL"
-  [color]
+  [^Scalar color]
   (apply colors/rgb-to-hsl (reverse (take 3 (.val color)))))
 
 (defn hu-invariants
@@ -97,7 +97,7 @@
   [moments]
   (let [result (reusable (MatOfDouble.))]
     (Imgproc/HuMoments moments result)
-    (.toList result)))
+    (.toList ^MatOfDouble result)))
 
 (defn contour-hu-invariants
   "Calculate Hu invariants from contour"
@@ -124,7 +124,7 @@
           d)])))
 
 (defn intersect-lines-pts
-  [pt1 pt2 pt3 pt4]
+  [^Point pt1 ^Point pt2 ^Point pt3 ^Point pt4]
   (let [[ix iy] (intersect-lines [(.x pt1) (.y pt1) (.x pt2) (.y pt2)]
                                  [(.x pt3) (.y pt3) (.x pt4) (.y pt4)])]
     (when (and ix iy) (Point. ix iy))))
@@ -137,19 +137,19 @@
 
 (defn point-add
   "Add p1 to p2"
-  [p1 p2]
+  [^Point p1 ^Point p2]
   (Point. (+ (.x p1) (.x p2))
           (+ (.y p1) (.y p2))))
 
 (defn point-sub
   "Subtract p2 from p1"
-  [p1 p2]
+  [^Point p1 ^Point p2]
   (Point. (- (.x p1) (.x p2))
           (- (.y p1) (.y p2))))
 
 (defn quadrilateral?
   "True if contour can be approximated by a polygon with 4 points."
-  [contour]
+  [^MatOfPoint contour]
   (let [c2f (MatOfPoint2f.)
         approx2f (MatOfPoint2f.)]
     (.convertTo contour c2f CvType/CV_32FC2)
@@ -162,17 +162,17 @@
   "Sort a list of points in specified order
    Default: [top-left top-right bottom-right bottom-left]"
   ([pts] (sort-rectangle-points pts [[-1 -1] [1 -1] [1 1] [-1 1]]))
-  ([pts pt-order]
+  ([pts ^java.util.List pt-order]
    (let [center (center-point pts)]
      (sort-by #(.indexOf pt-order
-                         [(sgn (- (.x %) (.x center)))
-                          (sgn (- (.y %) (.y center)))])
+                         [(sgn (- (.x ^Point %) (.x center)))
+                          (sgn (- (.y ^Point %) (.y center)))])
               pts))))
 
 (defn angle-3p
   "Given points A B C defining lines AB and BC, the angle at B"
-  [a b c]
-  (let [[[p2x p2y] [p1x p1y] [p3x p3y]] (map #(vector (.x %) (.y %)) [a b c])
+  [^Point a ^Point b ^Point c]
+  (let [[[p2x p2y] [p1x p1y] [p3x p3y]] (map #(vector (.x ^Point %) (.y ^Point %)) [a b c])
         p12 (line-len p1x p1y p2x p2y)
         p13 (line-len p1x p1y p3x p3y)
         p23 (line-len p2x p2y p3x p3y)]
@@ -188,12 +188,12 @@
 (defn sort-rectangle-points-angle
   [pts]
    (let [center (center-point pts)]
-     (sort-by #(Math/atan2 (- (.y %) (.y center))
-                           (- (.x center) (.x %)))
+     (sort-by #(Math/atan2 (- (.y ^Point %) (.y center))
+                           (- (.x center) (.x ^Point %)))
               pts)) )
 
 (defn angle-to-center
-  [center pt]
+  [^Point center ^Point pt]
   (Math/atan2 (- (.y pt) (.y center))
               (- (.x center) (.x pt))))
 
@@ -212,8 +212,8 @@
   (let [lc (cycle coll)]
     (apply map vector coll (map #(drop (inc %) lc) (range (dec n))))))
 
-(defn simplify-shape
-  [contour]
+(defn ^MatOfPoint simplify-shape
+  [^MatOfPoint contour]
   (let [c2f (MatOfPoint2f.)
         approx2f (MatOfPoint2f.)
         approx (MatOfPoint.)]
@@ -246,7 +246,7 @@
 
 (defn rectangle?
   "True if contour can be approximated by a polygon with 4 points that meet at more-or-less right angles."
-  [contour]
+  [^MatOfPoint contour]
   (if (= 4 (.rows contour))
     (pts-rectangle? (.toList contour))
     (pts-rectangle? (.toList (simplify-shape contour)))))

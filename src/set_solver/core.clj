@@ -11,11 +11,10 @@
             [set-solver.perspective-ratio :refer [estimate-focal-length rectangle-aspect-ratio ]])
 
   (:import [java.nio ByteBuffer ByteOrder]
-            [org.opencv.core Core CvType Moments Mat MatOfDouble MatOfByte MatOfInt4 MatOfFloat MatOfPoint MatOfPoint2f Size TermCriteria Point Scalar Rect MatOfKeyPoint]
+            [org.opencv.core Core CvType Moments Mat MatOfDouble MatOfByte MatOfInt4 MatOfFloat MatOfPoint MatOfPoint2f Size TermCriteria Point Scalar Rect MatOfKeyPoint RotatedRect]
             [org.opencv.imgproc Imgproc]
             [org.opencv.imgcodecs Imgcodecs]
             [org.opencv.features2d FeatureDetector Features2d]))
-
 
 ;; card dimensions: 2 1/4" x 3 1/2"
 
@@ -89,16 +88,16 @@
 
 (defn get-perspective-ratio
   ([pts img] (get-perspective-ratio pts img nil))
-  ([pts img focal-length]
-   (let [pt-list (mapcat #(list (.x %) (.y %)) (mat-seq pts))
+  ([pts ^Mat img focal-length]
+   (let [pt-list (mapcat #(list (.x ^Point %) (.y ^Point %)) (mat-seq pts))
          center [(/ (.width img) 2.0)
                  (/ (.height img) 2.0)]
          result (apply rectangle-aspect-ratio (concat pt-list center [focal-length]))]
      ;;(println pt-list center result)
      result)))
 
-(defn efl [pts img]
-  (let [pt-list (mapcat #(list (.x %) (.y %)) (mat-seq pts))
+(defn efl [pts ^Mat img]
+  (let [pt-list (mapcat #(list (.x ^Point %) (.y ^Point %)) (mat-seq pts))
         center [(/ (.width img) 2.0)
                 (/ (.height img) 2.0)]
         result (apply estimate-focal-length (concat pt-list center))]
@@ -114,8 +113,8 @@
   a top-most or bottom-most point at a 135 degree angle."
   [pts]
   (let [pts (mat-seq pts)
-        [left-most right-most] ((juxt first last) (sort-by #(.x %) pts))
-        [top-most bottom-most] ((juxt first last) (sort-by #(.y %) pts))
+        [left-most right-most] ((juxt first last) (sort-by #(.x ^Point %) pts))
+        [top-most bottom-most] ((juxt first last) (sort-by #(.y ^Point %) pts))
         angles (into {left-most 45 right-most 45}
                      {top-most 135 bottom-most 135})
         combos (filter #((set [left-most right-most top-most bottom-most]) (second %))
@@ -128,7 +127,7 @@
 
 
 (defn overlapping-y
-  [r1 r2]
+  [^Rect r1 ^Rect r2]
   (or (< (.y (.tl r1)) (.y (.tl r2)) (.y (.br r1)))
       (< (.y (.tl r1)) (.y (.br r2)) (.y (.br r1)))
       (< (.y (.tl r2)) (.y (.br r1)) (.y (.br r2)))
@@ -145,7 +144,7 @@
 (defn group-contours
   [contours]
   (let [contours-with-bb (map #(vector % (Imgproc/boundingRect %)) contours)
-        contours-with-bb (reverse (sort-by #(.height (second %)) contours-with-bb))
+        contours-with-bb (reverse (sort-by #(.height ^Rect (second %)) contours-with-bb))
         groups (reduce
                 (fn [buckets [c bb]]
                   (if-let [target (some #(when (any-overlapping-y bb (map second %)) %)
@@ -167,7 +166,7 @@
         (some #(close-enough? % height min-dist) (drop 2 pts)))))
 
 (defn hsv
-  [bgr-img]
+  [^Mat bgr-img]
   (let [channels (java.util.LinkedList.)
         hsv-img (Mat. (.size bgr-img) CvType/CV_8UC3)]
      (Imgproc/cvtColor bgr-img hsv-img Imgproc/COLOR_BGR2HSV)
@@ -175,24 +174,25 @@
      (vec channels)))
 
 ;; FIXME: rgb? bgr? doesn't matter
-(defn- intensity
-  [rgb-img]
-  (let [channels (java.util.LinkedList.)]
-    (Core/split rgb-img channels)
-    (Core/divide (.get channels 0) (Scalar. 3 0 0) (.get channels 0))
-    (Core/divide (.get channels 1) (Scalar. 3 0 0) (.get channels 1))
-    (Core/divide (.get channels 2) (Scalar. 3 0 0) (.get channels 2))
-    (Core/add (.get channels 0) (.get channels 1) (.get channels 0))
-    (Core/add (.get channels 0) (.get channels 2) (.get channels 0))
-    (.release (.get channels 1))
-    (.release (.get channels 2))
-    (.get channels 0)))
+(defn- ^Mat intensity
+  [^Mat rgb-img]
+  (let [channels (java.util.LinkedList.)
+        _ (Core/split rgb-img channels)
+        [^Mat c0 ^Mat c1 ^Mat c2] (vec channels)]
+    (Core/divide c0 (Scalar. 3 0 0) c0)
+    (Core/divide c1 (Scalar. 3 0 0) c1)
+    (Core/divide c2 (Scalar. 3 0 0) c2)
+    (Core/add c0 c1 c0)
+    (Core/add c0 c2 c0)
+    (.release c1)
+    (.release c2)
+    c0))
 
 ;; FIXME: add min-height, extend y in both directions
 (defn distance-to-corner
   [contours min-left min-right]
   (let [pts (flatten (map mat-seq contours))
-        bb (apply merge-rects (map #(Imgproc/boundingRect %) contours))
+        ^Rect bb (apply merge-rects (map #(Imgproc/boundingRect %) contours))
         bl (Point. (min min-left (-> bb .tl .x)) (-> bb .br .y))
         tr (Point. (max min-right (-> bb .br .x)) (-> bb .tl .y))
         dists (map (juxt #(line-len bl %) #(line-len tr %)) pts)]
@@ -226,7 +226,7 @@
     (map #(shrink-contour % center dist) contours)))
 
 (defn identify-card
-  [img contour]
+  [img ^MatOfPoint contour]
   (let [target (Mat/zeros 350 225 CvType/CV_8UC3)
         target-points (MatOfPoint2f.)
         tright (-> target .cols dec)
@@ -242,7 +242,7 @@
         _ (.convertTo contour c2f CvType/CV_32FC2)
         trans-mat (Imgproc/getPerspectiveTransform c2f target-points)
         _ (Imgproc/warpPerspective img target trans-mat (.size target))
-        [h s v] (hsv target)
+        [^Mat h ^Mat s ^Mat v] (hsv target)
         i (intensity target)]
         ;; TODO
         ;; if no shapes detected: try canny with 20 30 or something
@@ -323,7 +323,7 @@
          :image target}))))
 
 (defn old-identify-card
-  [img contour]
+  [img ^Mat contour]
   (let [target (Mat/zeros 600 300 CvType/CV_8UC3)
         target-points (MatOfPoint2f.)
         tright (-> target .cols dec)
@@ -487,8 +487,8 @@
           []
           contours))
 
-(defn min-area-rect
-  [contour]
+(defn ^RotatedRect min-area-rect
+  [^MatOfPoint contour]
   (let [c2f (MatOfPoint2f.)]
     (.convertTo contour c2f CvType/CV_32FC2)
     (Imgproc/minAreaRect c2f)))
@@ -510,7 +510,7 @@
                          center (.center r)
                          area (* (-> r .size .width)
                                  (-> r .size .height))]
-                     (some (fn [[oc or]]
+                     (some (fn [[oc ^Rect or]]
                              (and (not= oc c)
                                   (> (.area or) area)
                                   (.contains or center)))
@@ -521,8 +521,8 @@
   (debug-fn
    "rectangles"
    (fn [canvas]
-     (doseq [contour contours]
-       (let [color (case (round (Math/abs (- 4 (.rows contour))))
+     (doseq [^MatOfPoint contour contours]
+       (let [color (case (int (round (Math/abs (- 4 (.rows contour)))))
                      0 (Scalar. 255 0 0)
                      1 (Scalar. 192 0 0)
                      2 (Scalar. 128 0 0)
@@ -533,11 +533,11 @@
                  center (center-point pts)
                  angle1 (apply angle-3p (take 3 pts))
                  angle2 (apply angle-3p (take-last 3 pts))
-                 [p0 p1 p2 p3] (vec pts)
+                 [^Point p0 ^Point p1 ^Point p2 ^Point p3] (vec pts)
                  ratio (get-perspective-ratio pts canvas)
                  ;ratio (if (> ratio 1.2) (- (/ 1 ratio)) ratio)
                  ]
-             (doseq [pt pts]
+             (doseq [^Point pt pts]
                (Imgproc/putText canvas (format "%.1f" (Math/atan2 (- (.y pt) (.y center))
                                                                   (- (.x center) (.x pt))))
                                 pt
@@ -627,8 +627,6 @@
         d (point-add c ab)]
     [a b c d]))
 
-(add-4th-point [(Point. 2 -1) (Point. 4 3) (Point. 2 4)])
-
 (defn rectanglify-3
   "Find 3 connected points, ABC, where ABC is a right-ish angle.
    Make another point D such that AB=CD and AD=BC. "
@@ -639,7 +637,7 @@
        (filter pts-rectangle?)))
 
 (defn rectanglify
-  [contour debug-fn]
+  [^MatOfPoint contour debug-fn]
   (if (< 3 (.rows contour) 8)
     (let [pts (mat-seq contour)]
       (when-let [new-contours (concat (rectanglify-1 pts)
@@ -650,7 +648,7 @@
     contour))
 
 (defn- find-cards
-  [img debug-fn]
+  [^Mat img debug-fn]
   (let [contours (java.util.LinkedList.)]
     (Imgproc/findContours img contours (MatOfInt4.)
                           Imgproc/RETR_EXTERNAL
@@ -681,7 +679,7 @@
                         distinct-contours)]
       (debug-fn "Contours-post"
        (fn [canvas]
-         (doseq [[i c] (enumerate contours)]
+         (doseq [[i ^MatOfPoint c] (enumerate contours)]
            (Imgproc/drawContours canvas contours i
                                  (Scalar. (rand-int 255) 0 0) 1)
            (Imgproc/putText canvas (str (.rows c))
@@ -690,7 +688,7 @@
       contours)))
 
 (defn find-cards-intensity
-  [img debug-fn]
+  [^Mat img debug-fn]
   (let [img-i (intensity img)
         [h s v] (hsv img)
         work (Mat. (.size img) CvType/CV_8U)]
@@ -709,7 +707,7 @@
                 (Imgproc/dilate canvas canvas (Mat.))))
 
     (debug-fn "canny lines"
-              (fn [canvas]
+              (fn [^Mat canvas]
                 (let [lines (MatOfInt4.)]
                   (Imgproc/Canny (.clone img-i) canvas 20 200)
                   (Imgproc/dilate canvas canvas (Mat.))
@@ -756,11 +754,11 @@
 ;;     see if mask outline itself is card-shaped
 ;;     see if any sets of 4 points are card shaped
 
-(defn get-pt [img pt]
+(defn get-pt [^Mat img ^Point pt]
   (first (.get img (.y pt) (.x pt))))
 
 (defn find-cards-corners
-  [img debug-fn]
+  [^Mat img debug-fn]
   (let [img-i (intensity img)
         corners (MatOfPoint.)]
     (Imgproc/goodFeaturesToTrack img-i corners 255 0.1 6 (Mat.) 10 false 0.04)

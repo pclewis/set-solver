@@ -6,28 +6,30 @@
             [quil.middleware :as m]
             [set-solver.core :refer :all]
             [set-solver.util :refer [constrain enumerate]]
+            [set-solver.reusable-buffer :refer [reusable]]
             [com.evocomputing.colors :as colors])
   (:import [java.nio ByteBuffer ByteOrder]
            [org.opencv.core Mat Size Rect Point CvType Scalar]
            [org.opencv.imgcodecs Imgcodecs]
            [org.opencv.imgproc Imgproc]
            [org.opencv.videoio VideoCapture]
-           [java.lang.management ManagementFactory]))
+           [java.lang.management ManagementFactory]
+           [processing.core PImage]))
 
 
-(defn mat->p-img
+(defn ^PImage mat->p-img
   "Convert a Mat to a p-img"
-  ([mat]
+  ([^Mat mat]
    (mat->p-img mat
                (condp = (.type mat)
                  CvType/CV_8U   Imgproc/COLOR_GRAY2RGBA
                  CvType/CV_8UC3 Imgproc/COLOR_RGB2RGBA
                  nil) ))
-  ([mat conv]
-   (let [n-pixels (* (.width mat) (.height mat))
-         b-array  (byte-array (* 4 n-pixels))
-         i-array  (int-array n-pixels)
-         p-img    (q/create-image (.width mat) (.height mat) :rgb)]
+  ([^Mat mat conv]
+   (let [n-pixels        (* (.width mat) (.height mat))
+         ^bytes b-array  (reusable (byte-array (* 4 n-pixels)))
+         ^ints i-array   (reusable (int-array n-pixels))
+         ^PImage p-img   (reusable (q/create-image (.width mat) (.height mat) :rgb))]
 
      ;; convert color if necessary
      (if (nil? conv)
@@ -48,7 +50,9 @@
      (.updatePixels p-img)
      p-img)))
 
-(defn resize-keep-ratio [mat max-width max-height]
+(defn resize-keep-ratio
+  "Resize an OpenCV Mat to fit in provided dimensions, preserving aspect ratio."
+  [mat max-width max-height]
   (let [origAR (/ (.width mat) (.height mat))
         newAR (/ max-width max-height)
         ratio (if (> origAR newAR)
@@ -71,27 +75,27 @@
         (assoc state :image (reasonable-size (Imgcodecs/imread (:image-file state))))
         (assoc state :debug-canvas (Mat/zeros (.size (:image state)) CvType/CV_8U))))
 
-(defn filter-query [query coll]
+(defn filter-query
+  "Filter collection to contain only items that match query."
+  [query coll]
   (let [query (.toLowerCase query)]
     (if (empty? query)
       coll
       (filter #(.contains (.toLowerCase %) query) coll))))
 
 (defn load-next-image [state]
-  (load-image state
-              (let [next-file (->> (filter-query (:file-query state) (:file-list state))
-                                   (partition-by #{(:image-file state)})
-                                   (remove #{(list (:image-file state))})
-                                   (last)
-                                   (first))]
-                (or next-file (first (:file-list state))))))
+  (let [next-file (->> (filter-query (:file-query state) (:file-list state))
+                       (partition-by #{(:image-file state)})
+                       (remove #{(list (:image-file state))})
+                       (last)
+                       (first))]
+    (load-image state (or next-file (first (:file-list state))))))
 
 (defn load-prev-image [state]
-  (load-image state
-              (let [prev-file (->> (filter-query (:file-query state) (:file-list state))
-                                   (take-while (complement #{(:image-file state)}) )
-                                   (last))]
-                (or prev-file (last (:file-list state))))))
+  (let [prev-file (->> (filter-query (:file-query state) (:file-list state))
+                       (take-while (complement #{(:image-file state)}) )
+                       (last))]
+    (load-image state (or prev-file (last (:file-list state))))))
 
 (defn load-camera-image [state]
   (as-> state state
@@ -192,14 +196,17 @@
                   canvas)]
         (reset! (:debug state) img)))))
 
-(defn get-rss [pid]
-  (-> (str "/proc/" pid "/statm")
-      (java.io.FileReader.) ;; buffered reader doesn't always work on /proc
-      (slurp)
-      (clojure.string/split #"\s+")
-      (second)
-      (Integer/parseInt)
-      (* 4096)))
+(defn get-rss
+  "Get the resident set size of pid when procfs is available, otherwise return nil."
+  [pid]
+  (let [file (clojure.java.io/as-file (str "/proc/" pid "/statm"))]
+    (when (.exists file)
+      (-> (java.io.FileReader. file)    ;; buffered reader doesn't always work on /proc
+          (slurp)
+          (clojure.string/split #"\s+") ;; size resident share text lib data dt
+          (second)
+          (Integer/parseInt)
+          (* 4096)))))                  ;; HACK: assuming system page size is 4096
 
 (defn add-sets
   [cards sets]
@@ -256,54 +263,59 @@
     (if visible
       (q/fill 0 255 0)
       (q/fill 255))
-    (q/text (.replace line "resources/" "") (- width 100) (+ 15 (* i 15))))
+    (q/text (.replace ^String line "resources/" "") (- width 100) (+ 15 (* i 15))))
 
   (q/fill 0 0 0 192)
   (q/rect (- width 200) (- height 30) 200 30)
   (q/fill 255)
   (let [rt (Runtime/getRuntime)]
-    (q/text (format "%.1f / %.1f MB"
+    (q/text (format "Java: %.1f MB\nRSS:  %s MB"
                     (float (/ (.totalMemory rt) 1024 1024))
-                    (float (/ (:rss state) 1024 1024)))
-            (- width 175) (- height 15)))
+                    (if-let [rss (:rss state)]
+                      (format "%.1f" (float (/ rss 1024 1024)))
+                      "unk"))
+            (- width 100) (- height 15)))
 
   (q/fill 255)
   (when (:show-cards state)
     (doseq [c (:card-props state)
-            :let [card-img (mat->p-img (:image c))]]
+            :let [card-img (mat->p-img (:image c))
+                  bb ^Rect (:bb c)]]
 
       (q/image card-img
-               (- (* (:zoom state) (-> c :bb .tl .x))
+               (- (* (:zoom state) (-> bb .tl .x))
                   (:left state))
-               (- (* (:zoom state) (-> c :bb .tl .y))
+               (- (* (:zoom state) (-> bb .tl .y))
                   (:top state))
                (* (.width card-img) 0.50 (:zoom state))
                (* (.height card-img) 0.50 (:zoom state)))))
 
   (when (:show-card-info state)
     ;(clojure.pprint/pprint (:card-props2 state))
-    (doseq [c (:card-props state)]
+    (doseq [c (:card-props state)
+            :let [bb ^Rect (:bb c)]]
       (q/fill 0 0 0 192)
-      (q/rect (- (* (:zoom state) (-> c :bb .tl .x))
+      (q/rect (- (* (:zoom state) (-> bb .tl .x))
                  (:left state) 5)
-              (- (* (:zoom state) (-> c :bb .tl .y))
+              (- (* (:zoom state) (-> bb .tl .y))
                  (:top state) 20)
               120 85)
       (q/fill 255)
       (q/text (->> (select-keys c [:count :fill :color :shape])
                    (map (juxt key val))
                    (clojure.string/join "\n"))
-              (- (* (:zoom state) (-> c :bb .tl .x))
+              (- (* (:zoom state) (-> bb .tl .x))
                  (:left state))
-              (- (* (:zoom state) (-> c :bb .tl .y))
+              (- (* (:zoom state) (-> bb .tl .y))
                  (:top state)))))
 
   (when (:show-card-sets state)
-    (doseq [c (:card-props state)]
+    (doseq [c (:card-props state)
+            :let [bb ^Rect (:bb c)]]
       (q/fill 0 0 0 192)
-      (q/rect (- (* (:zoom state) (-> c :bb .tl .x))
+      (q/rect (- (* (:zoom state) (-> bb .tl .x))
                  (:left state) 5)
-              (- (* (:zoom state) (-> c :bb .tl .y))
+              (- (* (:zoom state) (-> bb .tl .y))
                  (:top state)
                  -67)
               120 35)
@@ -313,10 +325,10 @@
         (doseq [i (:in-sets c)]
           (apply q/fill (colors/hsl-to-rgb (* i 30) 50 50))
           (q/text (str i)
-                  (- (* (:zoom state) (-> c :bb .tl .x))
+                  (- (* (:zoom state) (-> bb .tl .x))
                      (:left state)
                      (* (dec i) (- size)))
-                  (- (* (:zoom state) (-> c :bb .tl .y))
+                  (- (* (:zoom state) (-> bb .tl .y))
                      (:top state)
                      -95)
                   )))

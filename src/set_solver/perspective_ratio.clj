@@ -17,7 +17,8 @@
   Based on http://research.microsoft.com/en-us/um/people/zhang/papers/tr03-39.pdf"
   (:require [clojure.core.matrix :refer :all]
             [clojure.core.matrix.operators :as matrix])
-  (:import [org.opencv.core Core MatOfDouble Scalar]))
+  (:import [org.opencv.core Core MatOfDouble Scalar]
+           [mikera.vectorz.Scalar]))
 
 (set-current-implementation :vectorz)
 
@@ -77,7 +78,7 @@
              f-squared (* (- fsq1) (+ (* fsq2 (* s s)) fsq3))]
          ;; In practice, f-squared is often negative, but the sqrt of
          ;; the abs behaves reasonably.
-         (Math/sqrt (Math/abs f-squared)))))) )
+         (Math/sqrt (Math/abs ^double f-squared)))))) )
 
 (defn rectangle-aspect-ratio
   "Estimate the aspect ratio of a rectangle given the corners."
@@ -115,7 +116,8 @@
                   (mmul a-1)
                   (mmul n3))
 
-         whr-squared (/ (.get whr1) (.get whr2))
+         whr-squared (/ (.get ^mikera.vectorz.Scalar whr1)
+                        (.get ^mikera.vectorz.Scalar whr2))
          whr (Math/sqrt whr-squared)]
      whr)))
 

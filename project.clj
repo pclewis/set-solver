@@ -21,5 +21,6 @@
                  [javax.servlet/servlet-api "2.5"]
                  [org.clojure/data.json "0.2.6"]
                  [prismatic/plumbing "0.4.4"]]
+  :global-vars {*warn-on-reflection* true}
 
   :injections [(clojure.lang.RT/loadLibrary org.opencv.core.Core/NATIVE_LIBRARY_NAME)])
